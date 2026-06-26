@@ -1,0 +1,14 @@
+{
+  "version": "1.0",
+  "description": "Monitoring targets for periodic signal scanning",
+  "symbols": [
+    {
+      "symbol": "000001.SZ",
+      "market": "A",
+      "data_source": "akshare",
+      "entry_rule": "close > ma20 and volume > vol_ma5 * 1.5",
+      "exit_rule": "close < ma10",
+      "notify_channels": ["dingtalk"]
+    }
+  ]
+}

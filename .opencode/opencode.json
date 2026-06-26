@@ -1,0 +1,25 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "alibaba-cn/qwen3.7-max",
+  "mcp": {
+    "search mcp": {
+      "type": "local",
+      "command": [
+        "nano-search-mcp",
+        "--transport",
+        "stdio"
+      ]
+    },
+    "vibe-trading": {
+      "type": "local",
+      "command": [
+        "python",
+        "-m",
+        "vibe_trading.mcp_server"
+      ]
+    }
+  },
+  "plugin": [
+    "oh-my-openagent@latest"
+  ]
+}

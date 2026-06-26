@@ -1,0 +1,43 @@
+{
+  "tasks": [
+    {
+      "id": "task_001",
+      "name": "escape_top_daily",
+      "cron": "0 8 * * 1-5",
+      "prompt": "运行A股逃顶分析:\npython -m scripts.microstructure.joint_escape_top_cli --output ./tmp/microstructure/joint_escape_top.json\n\n读取 JSON 结果，并与上次结果对比。\n\n生成钉钉 Markdown 摘要并发送通知。\n\nCRITICAL: 每次执行都必须发送钉钉通知，无论预警级别是否变化。",
+      "skills": ["analysis-report"],
+      "signal_rules": [],
+      "notify": {
+        "dingtalk": "https://oapi.dingtalk.com/robot/send?access_token=YOUR_TOKEN_HERE"
+      },
+      "enabled": true,
+      "created_at": "2026-06-09T05:51:26+00:00"
+    },
+    {
+      "id": "task_002",
+      "name": "nasdaq_entry_signal",
+      "cron": "50 14 * * 1-5",
+      "script": "cron_jobs/scripts/check_nasdaq_entry.py",
+      "prompt": "运行纳斯达克100ETF信号检查，生成S4+S5双策略信号摘要并发送钉钉通知。\n\nCRITICAL: 每次执行都必须发送钉钉通知。",
+      "skills": [],
+      "signal_rules": [],
+      "notify": {
+        "dingtalk": "https://oapi.dingtalk.com/robot/send?access_token=YOUR_TOKEN_HERE"
+      },
+      "enabled": true,
+      "created_at": "2026-06-05T00:00:00Z"
+    },
+    {
+      "id": "task_003",
+      "name": "sync_verify",
+      "cron": "30 19 * * 1-5",
+      "prompt": "运行增量同步验证脚本，生成验证摘要并发送钉钉通知。\n\nCRITICAL: 每次执行都必须发送钉钉通知。",
+      "skills": [],
+      "notify": {
+        "dingtalk": "https://oapi.dingtalk.com/robot/send?access_token=YOUR_TOKEN_HERE"
+      },
+      "enabled": true,
+      "created_at": "2026-06-03T00:00:00+00:00"
+    }
+  ]
+}
