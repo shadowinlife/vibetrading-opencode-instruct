@@ -60,7 +60,15 @@
 │   ├── registry.json                  #   任务注册表（空模板）
 │   └── watchlist.json                 #   监控标的列表
 ├── scripts/                           # 量化脚本骨架
-│   └── AGENTS.md                      #   子目录约束
+│   ├── AGENTS.md                      #   子目录约束
+│   └── memory/                        #   记忆进化系统（24 个模块）
+│       ├── schema.py                  #     MemoryEntry 数据结构
+│       ├── reflexion.py               #     Reflexion 失败检测与反思
+│       ├── expel.py                   #     ExpeL 洞察提取与计数器
+│       ├── evolution.py               #     COPRO/A-Evolve 指令进化
+│       ├── decay.py                   #     记忆衰减与相关性评分
+│       ├── injection.py               #     Worker prompt 注入
+│       └── ... (18 more modules)      #     完整模块列表见下文
 ├── policy/                            # 策略研究目录
 │   └── AGENTS.md                      #   子目录约束
 ├── docs/                              # DuckDB 表文档
@@ -263,6 +271,107 @@ Agent 会调用 Vibe-Trading 的 swarm 预设，启动多 agent 协作分析。
 | `periodic-execution` | 定时运行、cron | 周期任务注册、触发、通知管理 |
 | `stock-analysis-workflow` | 投资价值、估值 | 基本面 + 定性分析工作流 |
 | `stock-quant-analysis` | 量化分析、Alpha158 | 三模块并行量化分析入口 |
+
+---
+
+## 记忆进化系统
+
+`scripts/memory/` 包含完整的记忆进化系统，实现 AI Agent 的长期记忆、失败反思和自动优化能力。该系统基于学术论文 Reflexion、ExpeL、COPRO/A-Evolve 实现，已在生产环境验证。
+
+### 核心模块（24 个文件）
+
+| 模块 | 功能 | 学术基础 |
+|------|------|----------|
+| `schema.py` | MemoryEntry 数据结构、YAML frontmatter 序列化 | - |
+| `reflexion.py` | 失败检测、反思生成、错误笔记本追加 | Reflexion (Shinn et al. 2023) |
+| `expel.py` | 跨任务洞察提取、计数器机制（ADD/AGREE/DISAGREE） | ExpeL (Zhao et al. 2023) |
+| `evolution.py` | COPRO 风格候选生成、评分、选择最优指令更新 | COPRO (McLevey et al. 2024) |
+| `attribution.py` | GEPA 风格失败归因、指令级缺陷分类 | GEPA (Zelikman et al. 2024) |
+| `decay.py` | 时间衰减、使用频率加权、粘性条目机制 | - |
+| `scoring.py` | 回测指标评分、LLM-as-Judge 评分 | - |
+| `injection.py` | Worker prompt 注入、记忆块格式化 | - |
+| `swarm_bridge.py` | Swarm worker 记忆桥接 | - |
+| `feedback_reset.py` | 进化后反馈重置、解决旧错误条目 | - |
+| `stability.py` | 稳定性检测、发布分支管理 | - |
+| `sanity.py` | 变异后 sanity check（6 项检查） | - |
+| `scope_controller.py` | 渐进式范围控制（4 级强度） | - |
+| `git_committer.py` | Git 提交器、sanity gate、DingTalk 通知 | - |
+| `truncation.py` | 渐进式截断（4 级 fallback） | - |
+| `hooks.py` | 会话/run 完成钩子 | - |
+| `utils.py` | 共享工具函数 | - |
+| `parsers/` | 轨迹解析器（OpenCode、Swarm） | - |
+| `config/` | 配置文件（swarm_memory.json） | - |
+
+### 工作流程
+
+```
+会话完成
+  ↓
+hooks.py: 加载轨迹 → 检测失败
+  ↓
+reflexion.py: 生成反思 → 追加到 mistakes.md
+  ↓
+scoring.py: 评分轨迹（回测指标 / LLM-Judge）
+  ↓
+expel.py: 提取洞察 → 更新 insights.md（计数器机制）
+  ↓
+evolution.py: 生成候选指令更新 → 评分 → 选择最优
+  ↓
+sanity.py: 6 项 sanity check
+  ↓
+git_committer.py: 提交变更 → DingTalk 通知
+  ↓
+stability.py: 检测稳定性 → 创建发布分支（如适用）
+```
+
+### 关键特性
+
+1. **失败驱动反思**：仅在失败时生成反思，避免过度学习
+2. **计数器机制**：洞察通过社区支持度（ADD/AGREE/DISAGREE）动态调整
+3. **渐进式范围控制**：根据近期表现自动调整进化强度
+4. **Sanity Gate**：变异前必须通过 6 项检查（行数、重复、完整性等）
+5. **稳定性检测**：连续 N 次稳定后创建发布分支
+6. **记忆衰减**：时间衰减 + 使用频率加权 + 粘性条目（高频使用不衰减）
+
+### 使用示例
+
+```python
+from scripts.memory import MemoryEntry, relevance_score
+from scripts.memory.reflexion import detect_failure, generate_reflection
+from scripts.memory.expel import extract_insights
+
+# 1. 检测失败
+failure = detect_failure(trajectory)
+if failure:
+    reflection = generate_reflection(trajectory, failure)
+    # 追加到 ~/.vibe-trading/memory/stocks/{code}/mistakes.md
+
+# 2. 提取洞察
+insights = extract_insights(success_trajectories, failure_trajectories)
+# 更新 ~/.vibe-trading/memory/global/insights.md
+
+# 3. 计算相关性
+entry = MemoryEntry(...)
+score = relevance_score(entry)  # 考虑时间衰减 + 使用频率
+```
+
+### 配置
+
+记忆系统使用 `~/.vibe-trading/memory/` 作为根目录：
+
+```
+~/.vibe-trading/memory/
+├── stocks/                    # 按股票代码隔离的记忆
+│   └── {code}/
+│       ├── mistakes.md        # 错误笔记本
+│       └── insights.md        # 个股洞察
+├── global/                    # 全局记忆
+│   ├── mistakes.md            # 全局错误
+│   └── insights.md            # 跨股洞察
+└── evolution/                 # 进化历史
+    ├── candidates/            # 候选指令更新
+    └── releases/              # 发布分支记录
+```
 
 ---
 

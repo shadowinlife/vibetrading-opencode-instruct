@@ -1,0 +1,9 @@
+{
+  "memory_injection": {
+    "enabled": true,
+    "module": "scripts.memory.swarm_bridge",
+    "function": "inject_memory_into_swarm",
+    "max_tokens": 3000,
+    "fallback": "empty_string"
+  }
+}
