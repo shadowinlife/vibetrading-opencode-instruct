@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+
+{% block title %}{{ ts_code }} 信号报告{% endblock %}
+
+{% block content %}
+<!-- Signal Summary -->
+<section>
+  <h2>信号摘要</h2>
+  <div class="kpi-grid" style="grid-template-columns: repeat(3, 1fr);">
+    <div class="kpi-card">
+      <div class="label">信号类型</div>
+      <div class="value" style="font-size: 18px;">
+        <span class="badge {{ 'badge-success' if signal_type == 'buy' else 'badge-danger' }}">
+          {{ '买入' if signal_type == 'buy' else '卖出' }}
+        </span>
+      </div>
+    </div>
+    <div class="kpi-card">
+      <div class="label">触发价格</div>
+      <div class="value">{{ price }}</div>
+    </div>
+    <div class="kpi-card">
+      <div class="label">触发原因</div>
+      <div class="value" style="font-size: 14px;">{{ reason }}</div>
+    </div>
+  </div>
+</section>
+
+<!-- Price Chart with Signal -->
+{% if chart_data %}
+<section>
+  <h2>价格走势 + 信号标注</h2>
+  <div class="chart-container" id="price-chart"></div>
+</section>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+{% if chart_data %}
+<script>
+(function() {
+  var chart = echarts.init(document.getElementById('price-chart'));
+  var data = {{ chart_data | tojson }};
+  chart.setOption({
+    tooltip: { trigger: 'axis' },
+    grid: { left: 60, right: 20, top: 20, bottom: 30 },
+    xAxis: { type: 'category', data: data.dates, axisLabel: { fontSize: 11 } },
+    yAxis: { type: 'value', scale: true, axisLabel: { fontSize: 11 } },
+    series: [
+      {
+        name: '收盘价', type: 'line', data: data.prices, smooth: true,
+        lineStyle: { width: 2 }, itemStyle: { color: '#2563eb' },
+        markPoint: {
+          data: [{
+            coord: [data.signal_date, data.signal_price],
+            symbol: data.signal_type === 'buy' ? 'triangle' : 'diamond',
+            symbolSize: 16,
+            itemStyle: { color: data.signal_type === 'buy' ? '#16a34a' : '#dc2626' },
+            label: { show: true, formatter: data.signal_type === 'buy' ? '买入' : '卖出', fontSize: 12 }
+          }]
+        }
+      }
+    ]
+  });
+  window.addEventListener('resize', function() { chart.resize(); });
+})();
+</script>
+{% endif %}
+{% endblock %}

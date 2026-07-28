@@ -1,0 +1,9 @@
+{
+  "disabled": [
+    "trading_place_order",
+    "trading_cancel_order",
+    "trading_modify_order",
+    "trading_place_bracket",
+    "trading_select_connection"
+  ]
+}

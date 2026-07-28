@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="md-content">
+{{ content }}
+</div>
+
+<style>
+/* Markdown content styling */
+.md-content h1 { font-size: 24px; font-weight: 700; margin: 32px 0 16px; padding-bottom: 8px; border-bottom: 2px solid var(--accent); }
+.md-content h2 { font-size: 20px; font-weight: 600; margin: 28px 0 12px; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+.md-content h3 { font-size: 16px; font-weight: 600; margin: 20px 0 8px; }
+.md-content h4 { font-size: 14px; font-weight: 600; margin: 16px 0 8px; }
+.md-content p { margin-bottom: 12px; line-height: 1.7; }
+.md-content ul, .md-content ol { margin: 8px 0 16px 24px; }
+.md-content li { margin-bottom: 4px; line-height: 1.6; }
+.md-content strong { font-weight: 600; }
+.md-content em { font-style: italic; }
+.md-content code { font-family: var(--font-mono); background: var(--bg); padding: 2px 6px; border-radius: 4px; font-size: 13px; }
+.md-content pre { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; overflow-x: auto; margin-bottom: 16px; }
+.md-content pre code { background: none; padding: 0; }
+.md-content blockquote { border-left: 4px solid var(--accent); padding: 8px 16px; margin: 12px 0; background: var(--accent-light); border-radius: 0 var(--radius) var(--radius) 0; }
+.md-content hr { border: none; border-top: 1px solid var(--border); margin: 24px 0; }
+.md-content a { color: var(--accent); text-decoration: none; }
+.md-content a:hover { text-decoration: underline; }
+
+/* Tables from markdown */
+.md-content table {
+  width: 100%; border-collapse: collapse; background: var(--surface);
+  border: 1px solid var(--border); border-radius: var(--radius);
+  overflow: hidden; margin-bottom: 16px; font-size: 14px;
+}
+.md-content th, .md-content td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border); }
+.md-content th { background: var(--bg); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted); position: sticky; top: 0; }
+.md-content tr:hover td { background: var(--accent-light); }
+</style>
+{% endblock %}

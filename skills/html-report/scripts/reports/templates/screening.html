@@ -1,0 +1,303 @@
+{% extends "base.html" %}
+
+{% block title %}{{ strategy_name }} 选股报告 {{ date }}{% endblock %}
+
+{% block header_meta %}
+<span>📋 {{ strategy_name }}</span>
+<span>🏭 Universe: {{ funnel.universe }}</span>
+<span>🎯 Final: {{ funnel.final }}</span>
+{% endblock %}
+
+{% block content %}
+<!-- KPI Header -->
+<section>
+  <h2>筛选概览</h2>
+  <div class="kpi-grid" style="grid-template-columns: repeat(5, 1fr);">
+    <div class="kpi-card">
+      <div class="label">Universe</div>
+      <div class="value">{{ funnel.universe }}</div>
+    </div>
+    <div class="kpi-card">
+      <div class="label">Layer 1 基本面</div>
+      <div class="value">{{ funnel.layer1 }}</div>
+      <div class="change">{% if funnel.universe > 0 %}{{ "%.1f%%" | format(funnel.layer1 / funnel.universe * 100) }}{% else %}N/A{% endif %}</div>
+    </div>
+    <div class="kpi-card">
+      <div class="label">Layer 2 叙事</div>
+      <div class="value">{{ funnel.layer2 }}</div>
+      <div class="change">{% if funnel.universe > 0 %}{{ "%.1f%%" | format(funnel.layer2 / funnel.universe * 100) }}{% else %}N/A{% endif %}</div>
+    </div>
+    <div class="kpi-card">
+      <div class="label">Layer 3 资金流</div>
+      <div class="value">{{ funnel.layer3 }}</div>
+      <div class="change">{% if funnel.universe > 0 %}{{ "%.1f%%" | format(funnel.layer3 / funnel.universe * 100) }}{% else %}N/A{% endif %}</div>
+    </div>
+    <div class="kpi-card">
+      <div class="label">Final Pool</div>
+      <div class="value" style="color: var(--accent);">{{ funnel.final }}</div>
+      <div class="change">{% if funnel.universe > 0 %}{{ "%.2f%%" | format(funnel.final / funnel.universe * 100) }}{% else %}N/A{% endif %}</div>
+    </div>
+  </div>
+</section>
+
+<!-- Funnel Chart -->
+<section>
+  <h2>筛选漏斗</h2>
+  <div class="chart-container" id="funnel-chart"></div>
+</section>
+
+<!-- Radar Chart: Top 5 -->
+{% if tier1 %}
+<section>
+  <h2>Top 5 多维评分</h2>
+  <div class="chart-container" id="radar-chart"></div>
+</section>
+{% endif %}
+
+<!-- Tier 1: 强共振 -->
+{% if tier1 %}
+<section>
+  <h2>Tier 1 · 强共振 <span class="badge badge-success">{{ tier1 | length }}</span></h2>
+  <table>
+    <thead>
+      <tr>
+        <th>代码</th>
+        <th>名称</th>
+        <th>行业</th>
+        <th>ROE (%)</th>
+        <th>营收增速 (%)</th>
+        <th>PE</th>
+        <th>综合评分</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for s in tier1 %}
+      <tr>
+        <td style="font-family: var(--font-mono);">{{ s.ts_code }}</td>
+        <td><strong>{{ s.name }}</strong></td>
+        <td>{{ s.industry }}</td>
+        <td class="numeric">{{ "%.2f" | format(s.roe) }}</td>
+        <td class="numeric">{{ "%.2f" | format(s.revenue_yoy) }}</td>
+        <td class="numeric">{{ "%.1f" | format(s.pe) }}</td>
+        <td class="numeric"><span class="badge badge-success">{{ "%.2f" | format(s.composite_score) }}</span></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+<!-- Tier 2: 中共振 -->
+{% if tier2 %}
+<section>
+  <h2>Tier 2 · 中共振 <span class="badge badge-warning">{{ tier2 | length }}</span></h2>
+  <table>
+    <thead>
+      <tr>
+        <th>代码</th>
+        <th>名称</th>
+        <th>行业</th>
+        <th>ROE (%)</th>
+        <th>营收增速 (%)</th>
+        <th>PE</th>
+        <th>综合评分</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for s in tier2 %}
+      <tr>
+        <td style="font-family: var(--font-mono);">{{ s.ts_code }}</td>
+        <td><strong>{{ s.name }}</strong></td>
+        <td>{{ s.industry }}</td>
+        <td class="numeric">{{ "%.2f" | format(s.roe) }}</td>
+        <td class="numeric">{{ "%.2f" | format(s.revenue_yoy) }}</td>
+        <td class="numeric">{{ "%.1f" | format(s.pe) }}</td>
+        <td class="numeric"><span class="badge badge-warning">{{ "%.2f" | format(s.composite_score) }}</span></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+<!-- Tier 3: 观察 -->
+{% if tier3 %}
+<section>
+  <h2>Tier 3 · 观察 <span class="badge badge-accent">{{ tier3 | length }}</span></h2>
+  <table>
+    <thead>
+      <tr>
+        <th>代码</th>
+        <th>名称</th>
+        <th>行业</th>
+        <th>ROE (%)</th>
+        <th>营收增速 (%)</th>
+        <th>PE</th>
+        <th>综合评分</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for s in tier3 %}
+      <tr>
+        <td style="font-family: var(--font-mono);">{{ s.ts_code }}</td>
+        <td><strong>{{ s.name }}</strong></td>
+        <td>{{ s.industry }}</td>
+        <td class="numeric">{{ "%.2f" | format(s.roe) }}</td>
+        <td class="numeric">{{ "%.2f" | format(s.revenue_yoy) }}</td>
+        <td class="numeric">{{ "%.1f" | format(s.pe) }}</td>
+        <td class="numeric"><span class="badge badge-accent">{{ "%.2f" | format(s.composite_score) }}</span></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+<!-- Ablation Table -->
+{% if ablation %}
+<section>
+  <h2>消融实验</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>配置</th>
+        <th>股票数</th>
+        <th>平均 ROE (%)</th>
+        <th>平均评分</th>
+        <th>增量 Δ</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in ablation %}
+      <tr{% if loop.last %} class="highlight-row"{% endif %}>
+        <td><strong>{{ row.label }}</strong></td>
+        <td class="numeric">{{ row.stock_count }}</td>
+        <td class="numeric">{{ "%.1f" | format(row.avg_roe) }}</td>
+        <td class="numeric">{{ "%.2f" | format(row.avg_score) }}</td>
+        <td class="numeric">
+          {% if row.delta_score is not none %}
+            <span class="badge {{ 'badge-success' if row.delta_score > 0 else 'badge-danger' }}">
+              {{ "%+.2f" | format(row.delta_score) }}
+            </span>
+          {% else %}
+            —
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+<!-- Risk Warnings -->
+{% if risks %}
+<section>
+  <h2>风险提示</h2>
+  <div style="background: var(--danger-light); border: 1px solid var(--danger); border-radius: var(--radius); padding: 16px;">
+    <ul style="list-style: none; padding: 0; margin: 0;">
+      {% for risk in risks %}
+      <li style="padding: 6px 0; font-size: 14px; display: flex; align-items: flex-start; gap: 8px;">
+        <span class="badge badge-danger" style="flex-shrink: 0; margin-top: 2px;">⚠</span>
+        <span>{{ risk }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+</section>
+{% endif %}
+
+<!-- Position Advice -->
+{% if position_advice %}
+<section>
+  <h2>仓位建议</h2>
+  <div style="background: var(--accent-light); border: 1px solid var(--accent); border-radius: var(--radius); padding: 16px;">
+    <p style="font-size: 15px; line-height: 1.8;">{{ position_advice }}</p>
+  </div>
+</section>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+  // ── Funnel Chart ──
+  var funnelChart = echarts.init(document.getElementById('funnel-chart'));
+  var funnelData = {{ funnel | tojson }};
+  funnelChart.setOption({
+    tooltip: { trigger: 'item', formatter: '{b}: {c}' },
+    series: [{
+      type: 'funnel',
+      left: '10%', right: '10%', top: 20, bottom: 20,
+      width: '80%',
+      min: 0,
+      max: funnelData.universe,
+      sort: 'descending',
+      gap: 4,
+      label: { show: true, position: 'inside', fontSize: 14, fontFamily: 'var(--font-sans)' },
+      itemStyle: { borderWidth: 0 },
+      data: [
+        { value: funnelData.universe, name: 'Universe', itemStyle: { color: '#94a3b8' } },
+        { value: funnelData.layer1, name: 'Layer 1 基本面', itemStyle: { color: '#60a5fa' } },
+        { value: funnelData.layer2, name: 'Layer 2 叙事', itemStyle: { color: '#34d399' } },
+        { value: funnelData.layer3, name: 'Layer 3 资金流', itemStyle: { color: '#fbbf24' } },
+        { value: funnelData.final, name: 'Final Pool', itemStyle: { color: '#2563eb' } }
+      ]
+    }]
+  });
+
+  // ── Radar Chart: Top 5 ──
+  {% if tier1 %}
+  var radarChart = echarts.init(document.getElementById('radar-chart'));
+  var topStocks = {{ (tier1[:5] if tier1 else []) | tojson }};
+  var radarColors = ['#2563eb', '#16a34a', '#d97706', '#dc2626', '#7c3aed'];
+  var indicators = [
+    { name: 'ROE', max: 100 },
+    { name: '营收增速', max: 200 },
+    { name: 'PE(逆)', max: 100 },
+    { name: '综合评分', max: 3 },
+    { name: '行业热度', max: 100 }
+  ];
+  var seriesData = topStocks.map(function(s, i) {
+    var peInverse = Math.max(0, 100 - s.pe);
+    var industryHeat = Math.min(100, s.composite_score * 30);
+    return {
+      value: [s.roe, Math.min(200, s.revenue_yoy), peInverse, s.composite_score, industryHeat],
+      name: s.name + ' (' + s.ts_code.split('.')[0] + ')',
+      lineStyle: { color: radarColors[i % radarColors.length] },
+      itemStyle: { color: radarColors[i % radarColors.length] },
+      areaStyle: { color: radarColors[i % radarColors.length], opacity: 0.1 }
+    };
+  });
+  radarChart.setOption({
+    tooltip: {},
+    legend: {
+      data: seriesData.map(function(d) { return d.name; }),
+      bottom: 0, textStyle: { fontSize: 12 }
+    },
+    radar: {
+      indicator: indicators,
+      center: ['50%', '45%'],
+      radius: '60%',
+      splitNumber: 4,
+      axisName: { fontSize: 12 }
+    },
+    series: [{
+      type: 'radar',
+      data: seriesData,
+      symbol: 'circle',
+      symbolSize: 5
+    }]
+  });
+  {% endif %}
+
+  // ── Resize ──
+  window.addEventListener('resize', function() {
+    funnelChart.resize();
+    {% if tier1 %}
+    radarChart.resize();
+    {% endif %}
+  });
+})();
+</script>
+{% endblock %}

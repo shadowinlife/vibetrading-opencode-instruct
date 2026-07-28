@@ -1,0 +1,32 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "alibaba-cn/qwen3.7-max",
+  "mcp": {
+    "search mcp": {
+      "type": "local",
+      "command": [
+        "/opt/venv/bin/nano-search-mcp",
+        "--transport",
+        "stdio"
+      ]
+    },
+    "vibe-trading": {
+      "type": "local",
+      "command": [
+        "/opt/venv/bin/python",
+        "-c",
+        "from mcp_server import main; main()"
+      ],
+      "env": {
+        "CLICKHOUSE_HOST": "{{ CLICKHOUSE_HOST }}",
+        "CLICKHOUSE_PORT": "{{ CLICKHOUSE_PORT }}",
+        "CLICKHOUSE_USER": "{{ CLICKHOUSE_USER }}",
+        "CLICKHOUSE_PASSWORD": "{{ CLICKHOUSE_PASSWORD }}",
+        "CLICKHOUSE_DATABASE": "{{ CLICKHOUSE_DATABASE }}"
+      }
+    }
+  },
+  "plugin": [
+    "oh-my-openagent@latest"
+  ]
+}

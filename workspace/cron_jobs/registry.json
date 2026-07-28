@@ -1,0 +1,16 @@
+{
+  "tasks": [
+    {
+      "id": "example_signal_scan",
+      "name": "Example: Daily Signal Scanner",
+      "cron": "0 20 * * 1-5",
+      "prompt": "Run signal scan on your watchlist. Configure your own signal logic and notification template.",
+      "enabled": false,
+      "created_at": "2026-01-01T00:00:00Z",
+      "notify": {
+        "dingtalk": "https://oapi.dingtalk.com/robot/send?access_token=YOUR_TOKEN",
+        "email": ""
+      }
+    }
+  ]
+}

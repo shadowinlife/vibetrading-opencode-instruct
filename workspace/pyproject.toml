@@ -1,0 +1,11 @@
+[tool.pytest.ini_options]
+minversion = "6.0"
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = [
+    "core: core quote adapter functionality tests",
+    "unsupported_market: graceful failure for unknown markets",
+    "fallback_order: fallback chain ordering and retry tests",
+    "stale_quote: freshness validation and stale quote detection",
+    "intraday: intraday volume/amount adjustment tests",
+]

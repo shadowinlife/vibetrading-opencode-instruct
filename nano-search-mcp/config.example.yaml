@@ -1,0 +1,63 @@
+# NanoSearch MCP Server 配置文件
+# 配置优先级: CLI 参数 > 本文件 > 环境变量 > 内置默认值
+# 文件查找顺序: --config 指定路径 > ./config.yaml > ./nano-search-mcp.yaml > ~/.config/nano-search-mcp/config.yaml
+
+api:
+  # 百炼 API 密钥（推荐通过环境变量 DASHSCOPE_API_KEY 设置）
+  # dashscope_api_key: "sk-xxx"
+  # 百炼 WebSearch MCP 端点 URL
+  bailian_websearch_endpoint: "https://dashscope.aliyuncs.com/api/v1/mcps/WebSearch/mcp"
+  # 百炼 MCP HTTP 请求超时（秒）
+  bailian_mcp_timeout: 30.0
+
+server:
+  # MCP transport 类型: streamable-http 或 stdio
+  transport: "streamable-http"
+  # HTTP 监听地址
+  host: "0.0.0.0"
+  # HTTP 监听端口
+  port: 8000
+
+http:
+  # 网络请求最大重试次数
+  max_retries: 3
+  # 指数退避基数（秒）
+  backoff_base: 2.0
+  # 相邻请求最小间隔（秒）
+  request_interval: 1.0
+
+cache:
+  # 缓存根目录（支持 ~ 展开）
+  cache_dir: "~/.cache/nano_search_mcp"
+  # 列表页缓存 TTL（秒）
+  list_cache_ttl: 3600
+  # 详情页缓存 TTL（秒）
+  detail_cache_ttl: 604800
+
+fetch:
+  # Playwright 页面渲染后额外等待时间（毫秒）
+  playwright_wait_ms: 2000
+  # 返回正文最大字符数（超出截断）
+  max_content_length: 500000
+
+announcements:
+  # 单次列表抓取最多翻页数
+  max_pages: 10
+
+industry_reports:
+  # 单次列表抓取最多翻页数
+  max_pages: 5
+
+ir_meetings:
+  # 单次列表抓取最多翻页数
+  max_pages: 20
+
+deferred_search:
+  # deferred-tasks.md 文件路径
+  # deferred_tasks_path: "docs/source-intake/deferred-tasks.md"
+
+industry_policies:
+  # 每条 query 最大返回条数
+  max_per_query: 10
+  # 最终返回的政策条数上限
+  top_n: 5

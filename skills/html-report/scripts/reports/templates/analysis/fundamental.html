@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+
+{% block title %}{{ name | default(ts_code) }} 基本面分析报告{% endblock %}
+
+{% block content %}
+<!-- KPI Cards -->
+{% if metrics %}
+<section>
+  <h2>核心指标</h2>
+  <div class="kpi-grid">
+    {% for key, val in metrics.items() %}
+    <div class="kpi-card">
+      <div class="label">{{ key }}</div>
+      <div class="value">{{ val }}</div>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+<!-- Financial Trends -->
+{% if financial_trends %}
+<section>
+  <h2>财务趋势</h2>
+  <div class="chart-container" id="trend-chart"></div>
+</section>
+{% endif %}
+
+<!-- Business Mix -->
+{% if business_mix %}
+<section>
+  <h2>业务构成</h2>
+  <div class="chart-container small" id="mix-chart"></div>
+</section>
+{% endif %}
+
+<!-- Custom Sections -->
+{% for section_title, section_content in sections.items() %}
+<section>
+  <h2>{{ section_title }}</h2>
+  <div style="font-size: 14px; line-height: 1.8;">{{ section_content }}</div>
+</section>
+{% endfor %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+{% if financial_trends %}
+(function() {
+  var chart = echarts.init(document.getElementById('trend-chart'));
+  var data = {{ financial_trends | tojson }};
+  chart.setOption({
+    tooltip: { trigger: 'axis' },
+    legend: { data: data.metrics, top: 0 },
+    grid: { left: 60, right: 20, top: 40, bottom: 30 },
+    xAxis: { type: 'category', data: data.years },
+    yAxis: { type: 'value' },
+    series: data.series.map(function(s) {
+      return { name: s.name, type: 'bar', data: s.values };
+    })
+  });
+  window.addEventListener('resize', function() { chart.resize(); });
+})();
+{% endif %}
+
+{% if business_mix %}
+(function() {
+  var chart = echarts.init(document.getElementById('mix-chart'));
+  var data = {{ business_mix | tojson }};
+  chart.setOption({
+    tooltip: { trigger: 'item', formatter: '{b}: {c}% ({d}%)' },
+    series: [{
+      type: 'pie', radius: ['40%', '70%'],
+      data: Object.keys(data).map(function(k) { return { name: k, value: data[k] }; }),
+      label: { fontSize: 12 }
+    }]
+  });
+  window.addEventListener('resize', function() { chart.resize(); });
+})();
+{% endif %}
+</script>
+{% endblock %}

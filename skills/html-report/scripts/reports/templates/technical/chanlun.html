@@ -1,0 +1,170 @@
+{% extends "base.html" %}
+
+{% block title %}{{ name | default(ts_code) }} 缠论分析报告{% endblock %}
+
+{% block content %}
+<!-- Summary Cards -->
+{% if summary %}
+<section>
+  <h2>缠论结构摘要</h2>
+  <div class="kpi-grid" style="grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));">
+    {% if summary.current_level %}
+    <div class="kpi-card"><div class="label">当前级别</div><div class="value">{{ summary.current_level }}</div></div>
+    {% endif %}
+    {% if summary.center_count is defined %}
+    <div class="kpi-card"><div class="label">中枢数量</div><div class="value">{{ summary.center_count }}</div></div>
+    {% endif %}
+    {% if summary.last_signal %}
+    <div class="kpi-card"><div class="label">最近信号</div><div class="value" style="font-size: 16px;">{{ summary.last_signal }}</div></div>
+    {% endif %}
+    {% if summary.trend %}
+    <div class="kpi-card"><div class="label">趋势判断</div><div class="value" style="font-size: 16px;">{{ summary.trend }}</div></div>
+    {% endif %}
+  </div>
+</section>
+{% endif %}
+
+<!-- Main K-line Chart with Chanlun overlays -->
+<section>
+  <h2>K 线图 + 缠论结构</h2>
+  <div class="chart-container large" id="chanlun-chart"></div>
+</section>
+
+<!-- MACD Sub-chart -->
+{% if macd_data %}
+<section>
+  <h2>MACD</h2>
+  <div class="chart-container small" id="macd-chart"></div>
+</section>
+{% endif %}
+
+<!-- Signal Table -->
+{% if signals %}
+<section>
+  <h2>交易信号</h2>
+  <table>
+    <thead>
+      <tr><th>日期</th><th>类型</th><th>价格</th><th>级别</th><th>说明</th></tr>
+    </thead>
+    <tbody>
+      {% for s in signals %}
+      <tr>
+        <td>{{ s.date }}</td>
+        <td><span class="badge {{ 'badge-success' if s.type == 'buy' else 'badge-danger' }}">{{ '买入' if s.type == 'buy' else '卖出' }}</span></td>
+        <td class="numeric">{{ s.price }}</td>
+        <td>{{ s.level | default("—") }}</td>
+        <td>{{ s.reason | default("—") }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+  var chart = echarts.init(document.getElementById('chanlun-chart'));
+  var data = {{ chart_data | tojson }};
+
+  var series = [
+    {
+      name: 'K线', type: 'candlestick', data: data.candles,
+      itemStyle: { color: '#dc2626', color0: '#16a34a', borderColor: '#dc2626', borderColor0: '#16a34a' }
+    }
+  ];
+
+  // Fractals (top = red triangle, bottom = green triangle)
+  if (data.fractals && data.fractals.length > 0) {
+    var tops = data.fractals.filter(function(f) { return f.type === 'top'; });
+    var bottoms = data.fractals.filter(function(f) { return f.type === 'bottom'; });
+    series.push({
+      name: '顶分型', type: 'scatter', symbol: 'triangle', symbolSize: 10, symbolRotate: 180,
+      itemStyle: { color: '#dc2626' },
+      data: tops.map(function(f) { return [f.date, f.price]; })
+    });
+    series.push({
+      name: '底分型', type: 'scatter', symbol: 'triangle', symbolSize: 10,
+      itemStyle: { color: '#16a34a' },
+      data: bottoms.map(function(f) { return [f.date, f.price]; })
+    });
+  }
+
+  // Strokes (bi)
+  if (data.strokes && data.strokes.length > 0) {
+    series.push({
+      name: '笔', type: 'line', data: data.strokes,
+      lineStyle: { color: '#2563eb', width: 1.5 },
+      symbol: 'circle', symbolSize: 4, itemStyle: { color: '#2563eb' },
+      connectNulls: false
+    });
+  }
+
+  // Centers (zhongshu) - rendered as markArea
+  if (data.centers && data.centers.length > 0) {
+    var centerAreas = data.centers.map(function(c) {
+      return [{
+        xAxis: c.start_date, yAxis: c.high,
+        itemStyle: { color: 'rgba(37,99,235,0.1)', borderColor: '#2563eb', borderWidth: 1, borderType: 'dashed' }
+      }, {
+        xAxis: c.end_date, yAxis: c.low
+      }];
+    });
+    series[0].markArea = { silent: true, data: centerAreas };
+  }
+
+  // Buy/sell signals
+  if (data.signals && data.signals.length > 0) {
+    var buys = data.signals.filter(function(s) { return s.type === 'buy'; });
+    var sells = data.signals.filter(function(s) { return s.type === 'sell'; });
+    if (buys.length) series.push({
+      name: '买点', type: 'scatter', symbol: 'arrow', symbolSize: 16, symbolRotate: 0,
+      itemStyle: { color: '#16a34a' },
+      data: buys.map(function(s) { return { value: [s.date, s.price], name: s.reason }; }),
+      label: { show: true, formatter: 'B', fontSize: 10, color: '#16a34a', position: 'bottom' }
+    });
+    if (sells.length) series.push({
+      name: '卖点', type: 'scatter', symbol: 'arrow', symbolSize: 16, symbolRotate: 180,
+      itemStyle: { color: '#dc2626' },
+      data: sells.map(function(s) { return { value: [s.date, s.price], name: s.reason }; }),
+      label: { show: true, formatter: 'S', fontSize: 10, color: '#dc2626', position: 'top' }
+    });
+  }
+
+  chart.setOption({
+    tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
+    legend: { data: ['K线', '顶分型', '底分型', '笔', '买点', '卖点'], top: 0 },
+    grid: { left: 60, right: 20, top: 40, bottom: 60 },
+    xAxis: { type: 'category', data: data.dates, axisLabel: { fontSize: 11 } },
+    yAxis: { type: 'value', scale: true, axisLabel: { fontSize: 11 } },
+    dataZoom: [{ type: 'inside', start: 60, end: 100 }, { type: 'slider', start: 60, end: 100, height: 20, bottom: 10 }],
+    series: series
+  });
+  window.addEventListener('resize', function() { chart.resize(); });
+})();
+
+{% if macd_data %}
+(function() {
+  var chart = echarts.init(document.getElementById('macd-chart'));
+  var data = {{ macd_data | tojson }};
+  chart.setOption({
+    tooltip: { trigger: 'axis' },
+    legend: { data: ['DIF', 'DEA', 'MACD'], top: 0 },
+    grid: { left: 60, right: 20, top: 30, bottom: 30 },
+    xAxis: { type: 'category', data: data.dates, axisLabel: { fontSize: 11 } },
+    yAxis: { type: 'value', scale: true, axisLabel: { fontSize: 11 } },
+    series: [
+      { name: 'DIF', type: 'line', data: data.dif, lineStyle: { width: 1.5 }, itemStyle: { color: '#2563eb' } },
+      { name: 'DEA', type: 'line', data: data.dea, lineStyle: { width: 1.5 }, itemStyle: { color: '#d97706' } },
+      {
+        name: 'MACD', type: 'bar', data: data.macd,
+        itemStyle: { color: function(p) { return p.value >= 0 ? '#dc2626' : '#16a34a'; } }
+      }
+    ]
+  });
+  window.addEventListener('resize', function() { chart.resize(); });
+})();
+{% endif %}
+</script>
+{% endblock %}

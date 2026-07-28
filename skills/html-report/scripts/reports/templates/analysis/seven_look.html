@@ -1,0 +1,164 @@
+{% extends "base.html" %}
+
+{% block title %}{{ name | default(ts_code) }} 七看八问分析报告{% endblock %}
+
+{% block content %}
+<!-- Radar Chart -->
+<section>
+  <h2>七维评分总览</h2>
+  <div class="chart-container" id="radar-chart"></div>
+</section>
+
+<!-- Score Cards -->
+<section>
+  <h2>各维度详情</h2>
+  <div class="kpi-grid" style="grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));">
+    {% for dim in dimensions %}
+    <div class="kpi-card" style="padding: 20px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+        <span style="font-weight: 600; font-size: 16px;">{{ dim.name }}</span>
+        <span class="badge {{ 'badge-success' if dim.status == 'green' else 'badge-warning' if dim.status == 'yellow' else 'badge-danger' }}">
+          {{ dim.score }}/10
+        </span>
+      </div>
+      <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 8px;">{{ dim.summary }}</p>
+      {% if dim.key_metrics %}
+      <div style="font-size: 12px;">
+        {% for mk, mv in dim.key_metrics.items() %}
+        <div style="display: flex; justify-content: space-between; padding: 2px 0;">
+          <span style="color: var(--text-muted);">{{ mk }}</span>
+          <span style="font-family: var(--font-mono);">{{ mv }}</span>
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+</section>
+
+<!-- Financial Trends -->
+{% if financial_trends %}
+<section>
+  <h2>财务趋势</h2>
+  <div class="chart-container" id="trend-chart"></div>
+</section>
+{% endif %}
+
+<!-- Peer Comparison -->
+{% if peer_comparison %}
+<section>
+  <h2>同行对比</h2>
+  <table>
+    <thead>
+      <tr>
+        {% for col in peer_columns %}<th>{{ col }}</th>{% endfor %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in peer_comparison %}
+      <tr{% if row.is_self %} class="highlight-row"{% endif %}>
+        {% for col in peer_columns %}
+        <td{% if col != '名称' and col != '代码' %} class="numeric"{% endif %}>{{ row[col] }}</td>
+        {% endfor %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+<!-- Moat Analysis -->
+{% if moat %}
+<section>
+  <h2>护城河分析</h2>
+  <div class="kpi-grid" style="grid-template-columns: repeat(4, 1fr);">
+    <div class="kpi-card"><div class="label">品牌壁垒</div><div class="value">{{ moat.brand }}/5</div></div>
+    <div class="kpi-card"><div class="label">技术壁垒</div><div class="value">{{ moat.tech }}/5</div></div>
+    <div class="kpi-card"><div class="label">成本优势</div><div class="value">{{ moat.cost }}/5</div></div>
+    <div class="kpi-card"><div class="label">规模效应</div><div class="value">{{ moat.scale }}/5</div></div>
+  </div>
+</section>
+{% endif %}
+
+<!-- Risks -->
+{% if risks %}
+<section>
+  <h2>风险因素</h2>
+  {% for risk in risks %}
+  <div style="margin-bottom: 12px; padding: 12px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);">
+    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
+      <span class="badge {{ 'badge-danger' if risk.severity == 'high' else 'badge-warning' if risk.severity == 'medium' else 'badge-success' }}">
+        {{ risk.severity | upper }}
+      </span>
+      <strong>{{ risk.title }}</strong>
+    </div>
+    <p style="font-size: 13px; color: var(--text-muted);">{{ risk.description }}</p>
+  </div>
+  {% endfor %}
+</section>
+{% endif %}
+
+<!-- Eight Questions -->
+{% if eight_questions %}
+<section>
+  <h2>八问结论</h2>
+  {% for q in eight_questions %}
+  <details{% if loop.first %} open{% endif %}>
+    <summary><strong>Q{{ loop.index }}:</strong> {{ q.question }}</summary>
+    <p style="padding: 8px 0; font-size: 14px;">{{ q.answer }}</p>
+    {% if q.evidence %}
+    <p style="font-size: 12px; color: var(--text-muted);"><em>证据: {{ q.evidence }}</em></p>
+    {% endif %}
+  </details>
+  {% endfor %}
+</section>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Radar chart
+(function() {
+  var chart = echarts.init(document.getElementById('radar-chart'));
+  var dims = {{ dimensions | tojson }};
+  chart.setOption({
+    tooltip: {},
+    radar: {
+      indicator: dims.map(function(d) { return { name: d.name, max: 10 }; }),
+      radius: '65%',
+      axisName: { fontSize: 13 }
+    },
+    series: [{
+      type: 'radar',
+      data: [{
+        value: dims.map(function(d) { return d.score; }),
+        name: '评分',
+        areaStyle: { color: 'rgba(37,99,235,0.2)' },
+        lineStyle: { color: '#2563eb', width: 2 },
+        itemStyle: { color: '#2563eb' }
+      }]
+    }]
+  });
+  window.addEventListener('resize', function() { chart.resize(); });
+})();
+
+{% if financial_trends %}
+(function() {
+  var chart = echarts.init(document.getElementById('trend-chart'));
+  var data = {{ financial_trends | tojson }};
+  chart.setOption({
+    tooltip: { trigger: 'axis' },
+    legend: { data: data.metrics, top: 0 },
+    grid: { left: 60, right: 20, top: 40, bottom: 30 },
+    xAxis: { type: 'category', data: data.years },
+    yAxis: { type: 'value', axisLabel: { formatter: '{value}%' } },
+    series: data.series.map(function(s) {
+      return { name: s.name, type: 'line', data: s.values, smooth: true };
+    })
+  });
+  window.addEventListener('resize', function() { chart.resize(); });
+})();
+{% endif %}
+</script>
+{% endblock %}

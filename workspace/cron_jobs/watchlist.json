@@ -1,0 +1,16 @@
+{
+  "version": "1.0",
+  "description": "Monitoring targets for periodic signal scanning. Add your own symbols.",
+  "symbols": [
+    {
+      "symbol": "000001.SZ",
+      "market": "A",
+      "data_source": "akshare",
+      "signal_col": "close",
+      "entry_rule": "close > ma20 and volume > vol_ma5 * 1.5",
+      "exit_rule": "close < ma10",
+      "freshness_minutes": 30,
+      "notify_channels": ["dingtalk"]
+    }
+  ]
+}

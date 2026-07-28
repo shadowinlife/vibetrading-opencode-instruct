@@ -1,0 +1,176 @@
+{% extends "base.html" %}
+
+{% block title %}{{ ts_code }} Alpha158 回测报告{% endblock %}
+
+{% block content %}
+<!-- Current Status & Position -->
+{% if current_status %}
+<section class="status-banner" style="margin-bottom: 24px;">
+  <div style="display: flex; gap: 16px; align-items: stretch; flex-wrap: wrap;">
+    <!-- Signal Status -->
+    <div style="flex: 1; min-width: 200px; background: var(--surface); border: 2px solid {{ 'var(--success)' if current_status.signal == '买入' else 'var(--danger)' if current_status.signal == '卖出' else 'var(--warning)' }}; border-radius: var(--radius); padding: 20px; text-align: center;">
+      <div style="font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px;">当前信号</div>
+      <div style="font-size: 32px; font-weight: 700; color: {{ 'var(--success)' if current_status.signal == '买入' else 'var(--danger)' if current_status.signal == '卖出' else 'var(--warning)' }};">
+        {{ current_status.signal }}
+      </div>
+      {% if current_status.signal_date %}
+      <div style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">{{ current_status.signal_date }}</div>
+      {% endif %}
+    </div>
+    <!-- Recommended Position -->
+    <div style="flex: 1; min-width: 200px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; text-align: center;">
+      <div style="font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px;">建议仓位</div>
+      <div style="font-size: 32px; font-weight: 700; font-family: var(--font-mono);">
+        {{ current_status.position }}%
+      </div>
+      {% if current_status.position_reason %}
+      <div style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">{{ current_status.position_reason }}</div>
+      {% endif %}
+    </div>
+    <!-- Key Reason -->
+    <div style="flex: 2; min-width: 300px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px;">
+      <div style="font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px;">判断依据</div>
+      <div style="font-size: 14px; line-height: 1.8;">
+        {{ current_status.reason }}
+      </div>
+      {% if current_status.key_metrics %}
+      <div style="display: flex; gap: 16px; margin-top: 12px; flex-wrap: wrap;">
+        {% for mk, mv in current_status.key_metrics.items() %}
+        <div style="font-size: 12px;">
+          <span style="color: var(--text-muted);">{{ mk }}:</span>
+          <span style="font-family: var(--font-mono); font-weight: 600;">{{ mv }}</span>
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </div>
+  </div>
+</section>
+{% endif %}
+
+<!-- Strategy Comparison Table -->
+<section>
+  <h2>策略对比</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>策略</th><th>OOS总收益</th><th>年化收益</th><th>最大回撤</th>
+        <th>Calmar</th><th>交易次数</th><th>持有中位数</th><th>正Calmar折数占比</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for s in strategies %}
+      <tr{% if s.is_best %} class="highlight-row"{% endif %}>
+        <td>{{ s.name }}{% if s.is_best %} <span class="badge badge-accent">最优</span>{% endif %}</td>
+        <td class="numeric">{{ s.total_ret }}</td>
+        <td class="numeric">{{ s.annual_ret }}</td>
+        <td class="numeric">{{ s.max_dd }}</td>
+        <td class="numeric">{{ s.calmar }}</td>
+        <td class="numeric">{{ s.trade_count }}</td>
+        <td class="numeric">{{ s.median_hold }}</td>
+        <td class="numeric">{{ s.positive_fold_ratio }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<!-- Buy & Hold Benchmark -->
+<section>
+  <h2>买入持有基准</h2>
+  <div class="kpi-grid" style="grid-template-columns: repeat(4, 1fr);">
+    <div class="kpi-card"><div class="label">总收益</div><div class="value">{{ buyhold.total_ret }}</div></div>
+    <div class="kpi-card"><div class="label">年化收益</div><div class="value">{{ buyhold.annual_ret }}</div></div>
+    <div class="kpi-card"><div class="label">最大回撤</div><div class="value">{{ buyhold.max_dd }}</div></div>
+    <div class="kpi-card"><div class="label">Calmar</div><div class="value">{{ buyhold.calmar }}</div></div>
+  </div>
+</section>
+
+<!-- Best Strategy Highlight -->
+{% if best %}
+<section>
+  <h2>最优策略: {{ best.name }}</h2>
+  <div class="kpi-grid">
+    <div class="kpi-card"><div class="label">OOS 总收益</div><div class="value">{{ best.total_ret }}</div></div>
+    <div class="kpi-card"><div class="label">超额收益</div><div class="value">{{ best.excess_ret }}</div></div>
+    <div class="kpi-card"><div class="label">最大回撤</div><div class="value">{{ best.max_dd }}</div></div>
+    <div class="kpi-card"><div class="label">Calmar</div><div class="value">{{ best.calmar }}</div></div>
+    <div class="kpi-card"><div class="label">交易次数</div><div class="value">{{ best.trade_count }}</div></div>
+    <div class="kpi-card"><div class="label">持有中位数</div><div class="value">{{ best.median_hold }}</div></div>
+    <div class="kpi-card"><div class="label">最大持有期</div><div class="value">{{ best.max_hold }}</div></div>
+    <div class="kpi-card"><div class="label">稳健Calmar</div><div class="value">{{ best.robust_calmar }}</div></div>
+  </div>
+</section>
+{% endif %}
+
+<!-- Strategy Returns Chart -->
+{% if chart_data %}
+<section>
+  <h2>策略收益对比</h2>
+  <div class="chart-container" id="strategy-chart"></div>
+</section>
+{% endif %}
+
+<!-- Strategy Details -->
+{% if strategy_details %}
+<section>
+  <h2>策略搜索空间</h2>
+  <details open>
+    <summary>策略定义</summary>
+    {% for detail in strategy_details %}
+    <p style="margin-bottom: 4px;">{{ detail }}</p>
+    {% endfor %}
+  </details>
+</section>
+{% endif %}
+
+<!-- Qlib Notes -->
+{% if qlib_notes %}
+<section>
+  <h2>Qlib / Alpha158 说明</h2>
+  <details>
+    <summary>因子定义与处理器</summary>
+    <p><strong>Loader:</strong> <code>{{ qlib_notes.loader }}</code></p>
+    <p><strong>Handler:</strong> <code>{{ qlib_notes.handler }}</code></p>
+    <p style="margin-top: 8px; color: var(--text-muted);">注意: Alpha158 默认偏横截面用途；本次单股票回测采用时间序列 Z-score。</p>
+  </details>
+</section>
+{% endif %}
+
+<!-- Methodology -->
+<section>
+  <h2>方法论</h2>
+  <details>
+    <summary>回测约束与假设</summary>
+    <ul style="padding-left: 20px; line-height: 2;">
+      <li>数据区间: {{ coverage.start }} ~ {{ coverage.end }} ({{ coverage.bars }} 个交易日)</li>
+      <li>持股期不超过 {{ max_hold_days }} 个交易日（约 {{ max_hold_months }} 个月）</li>
+      <li>单边成本 {{ one_way_cost_pct }}%</li>
+      <li>跳过上市初期前 120 个交易日</li>
+      <li>策略模式固定，不做阈值网格搜索</li>
+    </ul>
+  </details>
+</section>
+{% endblock %}
+
+{% block scripts %}
+{% if chart_data %}
+<script>
+(function() {
+  var chart = echarts.init(document.getElementById('strategy-chart'));
+  var data = {{ chart_data | tojson }};
+  chart.setOption({
+    tooltip: { trigger: 'axis' },
+    legend: { data: data.names, top: 0 },
+    grid: { left: 60, right: 20, top: 40, bottom: 30 },
+    xAxis: { type: 'category', data: data.categories },
+    yAxis: { type: 'value', axisLabel: { formatter: '{value}%' } },
+    series: data.series.map(function(s, i) {
+      return { name: s.name, type: 'bar', data: s.values, itemStyle: { color: i === 0 ? '#2563eb' : '#78716c' } };
+    })
+  });
+  window.addEventListener('resize', function() { chart.resize(); });
+})();
+</script>
+{% endif %}
+{% endblock %}

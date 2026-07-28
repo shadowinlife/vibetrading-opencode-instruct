@@ -1,0 +1,439 @@
+{% extends "base.html" %}
+
+{% block title %}{{ name | default(ts_code) }} Vibe-Trading 回测报告{% endblock %}
+
+{% block extra_head %}
+<style>
+/* Strategy tabs */
+.strategy-tabs {
+  display: flex; gap: 4px; margin-bottom: 24px; border-bottom: 2px solid var(--border);
+  padding-bottom: 0; overflow-x: auto;
+}
+.strategy-tabs button {
+  background: none; border: none; cursor: pointer; padding: 10px 20px;
+  font-size: 14px; font-weight: 500; color: var(--text-muted);
+  border-bottom: 2px solid transparent; margin-bottom: -2px;
+  transition: color 150ms ease, border-color 150ms ease;
+  white-space: nowrap; font-family: var(--font-sans);
+}
+.strategy-tabs button:hover { color: var(--text); }
+.strategy-tabs button.active {
+  color: var(--accent); border-bottom-color: var(--accent); font-weight: 600;
+}
+.strategy-panel { display: none; }
+.strategy-panel.active { display: block; }
+</style>
+{% endblock %}
+
+{% block content %}
+<!-- Current Status & Position -->
+{% if current_status %}
+<section class="status-banner" style="margin-bottom: 24px;">
+  <div style="display: flex; gap: 16px; align-items: stretch; flex-wrap: wrap;">
+    <div style="flex: 1; min-width: 200px; background: var(--surface); border: 2px solid {{ 'var(--success)' if current_status.signal == '买入' else 'var(--danger)' if current_status.signal == '卖出' else 'var(--warning)' }}; border-radius: var(--radius); padding: 20px; text-align: center;">
+      <div style="font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px;">当前信号</div>
+      <div style="font-size: 32px; font-weight: 700; color: {{ 'var(--success)' if current_status.signal == '买入' else 'var(--danger)' if current_status.signal == '卖出' else 'var(--warning)' }};">
+        {{ current_status.signal }}
+      </div>
+      {% if current_status.signal_date %}
+      <div style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">{{ current_status.signal_date }}</div>
+      {% endif %}
+    </div>
+    <div style="flex: 1; min-width: 200px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; text-align: center;">
+      <div style="font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px;">建议仓位</div>
+      <div style="font-size: 32px; font-weight: 700; font-family: var(--font-mono);">
+        {{ current_status.position }}%
+      </div>
+      {% if current_status.position_reason %}
+      <div style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">{{ current_status.position_reason }}</div>
+      {% endif %}
+    </div>
+    <div style="flex: 2; min-width: 300px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px;">
+      <div style="font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px;">判断依据</div>
+      <div style="font-size: 14px; line-height: 1.8;">{{ current_status.reason }}</div>
+      {% if current_status.key_metrics %}
+      <div style="display: flex; gap: 16px; margin-top: 12px; flex-wrap: wrap;">
+        {% for mk, mv in current_status.key_metrics.items() %}
+        <div style="font-size: 12px;">
+          <span style="color: var(--text-muted);">{{ mk }}:</span>
+          <span style="font-family: var(--font-mono); font-weight: 600;">{{ mv }}</span>
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </div>
+  </div>
+</section>
+{% endif %}
+
+{% if strategies and strategies|length > 1 %}
+<!-- Multi-strategy tabs -->
+<div class="strategy-tabs" id="strategy-tabs">
+  {% for s in strategies %}
+  <button data-panel="strategy-{{ loop.index0 }}" class="{{ 'active' if loop.first else '' }}">{{ s.name }}{% if s.is_best %} ★{% endif %}</button>
+  {% endfor %}
+</div>
+
+{% for s in strategies %}
+<div class="strategy-panel {{ 'active' if loop.first else '' }}" id="strategy-{{ loop.index0 }}">
+  <!-- KPI Cards -->
+  <section>
+    <h2>{{ s.name }} — 核心指标</h2>
+    <div class="kpi-grid">
+      {% for kpi in s.kpis %}
+      <div class="kpi-card">
+        <div class="label">{{ kpi.label }}</div>
+        <div class="value">{{ kpi.value }}</div>
+        {% if kpi.change is defined and kpi.change %}
+        <div class="change {{ 'positive' if kpi.change_positive else 'negative' }}">{{ kpi.change }}</div>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <!-- Equity Curve -->
+  {% if s.equity_curve %}
+  <section>
+    <h2>收益曲线</h2>
+    <div class="chart-container" id="equity-chart-{{ loop.index0 }}"></div>
+  </section>
+  {% endif %}
+
+  <!-- Drawdown -->
+  {% if s.drawdown_curve %}
+  <section>
+    <h2>回撤曲线</h2>
+    <div class="chart-container small" id="drawdown-chart-{{ loop.index0 }}"></div>
+  </section>
+  {% endif %}
+
+  <!-- Trades -->
+  {% if s.trades %}
+  <section>
+    <h2>交易记录</h2>
+    <table>
+      <thead><tr><th>#</th><th>日期</th><th>方向</th><th>价格</th><th>盈亏</th><th>持仓天数</th><th>触发原因</th></tr></thead>
+      <tbody>
+        {% for t in s.trades %}
+        <tr>
+          <td>{{ loop.index }}</td>
+          <td>{{ t.date }}</td>
+          <td><span class="badge {{ 'badge-success' if t.direction == '买入' else 'badge-danger' }}">{{ t.direction }}</span></td>
+          <td class="numeric">{{ t.price }}</td>
+          <td class="numeric" style="color: {{ 'var(--success)' if t.pnl and t.pnl|string|first == '+' else 'var(--danger)' if t.pnl and t.pnl|string|first == '-' else 'inherit' }}">{{ t.pnl | default("—") }}</td>
+          <td class="numeric">{{ t.hold_days | default("—") }}</td>
+          <td>{{ t.trigger | default("—") }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+  {% endif %}
+
+  <!-- Strategy Params -->
+  {% if s.strategy_params %}
+  <section>
+    <h2>策略参数</h2>
+    <details>
+      <summary>评分系统 & 入场/出场规则</summary>
+      <div style="padding: 8px 0;">
+        {% for param in s.strategy_params %}
+        <p style="margin-bottom: 4px;">{{ param }}</p>
+        {% endfor %}
+      </div>
+    </details>
+  </section>
+  {% endif %}
+
+  <!-- Improvements -->
+  {% if s.improvements %}
+  <section>
+    <h2>核心改进</h2>
+    {% for imp in s.improvements %}
+    <p style="margin-bottom: 8px;"><strong>{{ loop.index }}.</strong> {{ imp }}</p>
+    {% endfor %}
+  </section>
+  {% endif %}
+</div>
+{% endfor %}
+
+{% else %}
+<!-- Single strategy (backward compatible) -->
+<!-- KPI Cards -->
+<section>
+  <h2>核心指标</h2>
+  <div class="kpi-grid">
+    {% for kpi in kpis %}
+    <div class="kpi-card">
+      <div class="label">{{ kpi.label }}</div>
+      <div class="value">{{ kpi.value }}</div>
+      {% if kpi.change is defined and kpi.change %}
+      <div class="change {{ 'positive' if kpi.change_positive else 'negative' }}">{{ kpi.change }}</div>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+</section>
+
+<!-- Version Comparison -->
+{% if version_comparison %}
+<section>
+  <h2>版本对比</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>指标</th>
+        {% for ver in version_headers %}<th>{{ ver }}</th>{% endfor %}
+        <th>变化</th>
+        <th>备注</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in version_comparison %}
+      <tr{% if row.highlight %} class="highlight-row"{% endif %}>
+        <td>{{ row.metric }}</td>
+        {% for val in row.values %}<td class="numeric">{{ val }}</td>{% endfor %}
+        <td class="numeric">{{ row.change }}</td>
+        <td>{{ row.note | default("") }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+<!-- Equity Curve -->
+{% if equity_curve %}
+<section>
+  <h2>收益曲线</h2>
+  <div class="chart-container" id="equity-chart"></div>
+</section>
+{% endif %}
+
+<!-- Drawdown Chart -->
+{% if drawdown_curve %}
+<section>
+  <h2>回撤曲线</h2>
+  <div class="chart-container small" id="drawdown-chart"></div>
+</section>
+{% endif %}
+
+<!-- Candlestick with signals -->
+{% if ohlcv_data %}
+<section>
+  <h2>K 线图 + 交易信号</h2>
+  <div class="chart-container large" id="candlestick-chart"></div>
+</section>
+{% endif %}
+
+<!-- Trade History -->
+{% if trades %}
+<section>
+  <h2>交易记录</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>#</th><th>日期</th><th>方向</th><th>价格</th><th>盈亏</th><th>持仓天数</th><th>触发原因</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for t in trades %}
+      <tr>
+        <td>{{ loop.index }}</td>
+        <td>{{ t.date }}</td>
+        <td><span class="badge {{ 'badge-success' if t.direction == '买入' else 'badge-danger' }}">{{ t.direction }}</span></td>
+        <td class="numeric">{{ t.price }}</td>
+        <td class="numeric" style="color: {{ 'var(--success)' if t.pnl and t.pnl|string|first == '+' else 'var(--danger)' if t.pnl and t.pnl|string|first == '-' else 'inherit' }}">{{ t.pnl | default("—") }}</td>
+        <td class="numeric">{{ t.hold_days | default("—") }}</td>
+        <td>{{ t.trigger | default("—") }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+<!-- Strategy Parameters -->
+{% if strategy_params %}
+<section>
+  <h2>策略参数</h2>
+  <details open>
+    <summary>评分系统 & 入场/出场规则</summary>
+    <div style="padding: 8px 0;">
+      {% for param in strategy_params %}
+      <p style="margin-bottom: 4px;">{{ param }}</p>
+      {% endfor %}
+    </div>
+  </details>
+</section>
+{% endif %}
+
+<!-- Improvements -->
+{% if improvements %}
+<section>
+  <h2>核心改进</h2>
+  {% for imp in improvements %}
+  <p style="margin-bottom: 8px;"><strong>{{ loop.index }}.</strong> {{ imp }}</p>
+  {% endfor %}
+</section>
+{% endif %}
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Tab switching
+(function() {
+  var tabs = document.getElementById('strategy-tabs');
+  if (!tabs) return;
+  tabs.addEventListener('click', function(e) {
+    if (e.target.tagName !== 'BUTTON') return;
+    var panelId = e.target.getAttribute('data-panel');
+    // Deactivate all
+    tabs.querySelectorAll('button').forEach(function(b) { b.classList.remove('active'); });
+    document.querySelectorAll('.strategy-panel').forEach(function(p) { p.classList.remove('active'); });
+    // Activate clicked
+    e.target.classList.add('active');
+    document.getElementById(panelId).classList.add('active');
+    // Resize charts in the newly visible panel
+    if (typeof echarts !== 'undefined') {
+      var panel = document.getElementById(panelId);
+      panel.querySelectorAll('[_echarts_index_]').forEach(function(el) {
+        var inst = echarts.getInstanceByDom(el);
+        if (inst) inst.resize();
+      });
+    }
+  });
+})();
+
+{% if strategies and strategies|length > 1 %}
+// Multi-strategy charts
+{% for s in strategies %}
+{% if s.equity_curve %}
+(function() {
+  var el = document.getElementById('equity-chart-{{ loop.index0 }}');
+  if (!el) return;
+  var chart = echarts.init(el);
+  var data = {{ s.equity_curve | tojson }};
+  chart.setOption({
+    tooltip: { trigger: 'axis' },
+    legend: { data: ['策略', '买入持有'], top: 0 },
+    grid: { left: 60, right: 20, top: 40, bottom: 30 },
+    xAxis: { type: 'category', data: data.dates, axisLabel: { fontSize: 11 } },
+    yAxis: { type: 'value', axisLabel: { formatter: '{value}%', fontSize: 11 } },
+    series: [
+      { name: '策略', type: 'line', data: data.strategy, smooth: true, lineStyle: { width: 2 }, itemStyle: { color: '#2563eb' } },
+      { name: '买入持有', type: 'line', data: data.buyhold, smooth: true, lineStyle: { width: 1.5, type: 'dashed' }, itemStyle: { color: '#78716c' } }
+    ]
+  });
+  window.addEventListener('resize', function() { chart.resize(); });
+})();
+{% endif %}
+{% if s.drawdown_curve %}
+(function() {
+  var el = document.getElementById('drawdown-chart-{{ loop.index0 }}');
+  if (!el) return;
+  var chart = echarts.init(el);
+  var data = {{ s.drawdown_curve | tojson }};
+  chart.setOption({
+    tooltip: { trigger: 'axis', formatter: '{b}<br/>回撤: {c}%' },
+    grid: { left: 60, right: 20, top: 10, bottom: 30 },
+    xAxis: { type: 'category', data: data.dates, axisLabel: { fontSize: 11 } },
+    yAxis: { type: 'value', axisLabel: { formatter: '{value}%', fontSize: 11 } },
+    series: [{
+      type: 'line', data: data.values, smooth: true,
+      areaStyle: { color: 'rgba(220,38,38,0.15)' },
+      lineStyle: { color: '#dc2626', width: 1.5 },
+      itemStyle: { color: '#dc2626' }
+    }]
+  });
+  window.addEventListener('resize', function() { chart.resize(); });
+})();
+{% endif %}
+{% endfor %}
+
+{% else %}
+// Single strategy charts (backward compatible)
+{% if equity_curve %}
+(function() {
+  var chart = echarts.init(document.getElementById('equity-chart'));
+  var data = {{ equity_curve | tojson }};
+  chart.setOption({
+    tooltip: { trigger: 'axis' },
+    legend: { data: ['策略', '买入持有'], top: 0 },
+    grid: { left: 60, right: 20, top: 40, bottom: 30 },
+    xAxis: { type: 'category', data: data.dates, axisLabel: { fontSize: 11 } },
+    yAxis: { type: 'value', axisLabel: { formatter: '{value}%', fontSize: 11 } },
+    series: [
+      { name: '策略', type: 'line', data: data.strategy, smooth: true, lineStyle: { width: 2 }, itemStyle: { color: '#2563eb' } },
+      { name: '买入持有', type: 'line', data: data.buyhold, smooth: true, lineStyle: { width: 1.5, type: 'dashed' }, itemStyle: { color: '#78716c' } }
+    ]
+  });
+  window.addEventListener('resize', function() { chart.resize(); });
+})();
+{% endif %}
+
+{% if drawdown_curve %}
+(function() {
+  var chart = echarts.init(document.getElementById('drawdown-chart'));
+  var data = {{ drawdown_curve | tojson }};
+  chart.setOption({
+    tooltip: { trigger: 'axis', formatter: '{b}<br/>回撤: {c}%' },
+    grid: { left: 60, right: 20, top: 10, bottom: 30 },
+    xAxis: { type: 'category', data: data.dates, axisLabel: { fontSize: 11 } },
+    yAxis: { type: 'value', axisLabel: { formatter: '{value}%', fontSize: 11 } },
+    series: [{
+      type: 'line', data: data.values, smooth: true,
+      areaStyle: { color: 'rgba(220,38,38,0.15)' },
+      lineStyle: { color: '#dc2626', width: 1.5 },
+      itemStyle: { color: '#dc2626' }
+    }]
+  });
+  window.addEventListener('resize', function() { chart.resize(); });
+})();
+{% endif %}
+
+{% if ohlcv_data %}
+(function() {
+  var chart = echarts.init(document.getElementById('candlestick-chart'));
+  var data = {{ ohlcv_data | tojson }};
+  var series = [
+    {
+      name: 'K线', type: 'candlestick',
+      data: data.candles,
+      itemStyle: {
+        color: '#dc2626', color0: '#16a34a',
+        borderColor: '#dc2626', borderColor0: '#16a34a'
+      }
+    }
+  ];
+  if (data.signals && data.signals.length > 0) {
+    var buySignals = data.signals.filter(function(s) { return s.type === 'buy'; });
+    var sellSignals = data.signals.filter(function(s) { return s.type === 'sell'; });
+    series.push({
+      name: '买入', type: 'scatter', symbol: 'triangle', symbolSize: 14,
+      itemStyle: { color: '#16a34a' },
+      data: buySignals.map(function(s) { return { value: [s.date, s.price], name: s.reason }; })
+    });
+    series.push({
+      name: '卖出', type: 'scatter', symbol: 'diamond', symbolSize: 14,
+      itemStyle: { color: '#dc2626' },
+      data: sellSignals.map(function(s) { return { value: [s.date, s.price], name: s.reason }; })
+    });
+  }
+  chart.setOption({
+    tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
+    legend: { data: ['K线', '买入', '卖出'], top: 0 },
+    grid: { left: 60, right: 20, top: 40, bottom: 30 },
+    xAxis: { type: 'category', data: data.dates, axisLabel: { fontSize: 11 } },
+    yAxis: { type: 'value', scale: true, axisLabel: { fontSize: 11 } },
+    dataZoom: [{ type: 'inside', start: 70, end: 100 }],
+    series: series
+  });
+  window.addEventListener('resize', function() { chart.resize(); });
+})();
+{% endif %}
+{% endif %}
+</script>
+{% endblock %}

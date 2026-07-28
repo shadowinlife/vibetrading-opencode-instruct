@@ -1,0 +1,34 @@
+# Build artifacts
+*.duckdb
+*.duckdb.tmp
+*.duckdb.wal
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+
+# Runtime data (volume-mounted at runtime)
+workspace/analysis/
+workspace/reports/
+workspace/runs/
+workspace/tmp/
+workspace/cron_jobs/logs/
+workspace/cron_jobs/state/
+
+# Git
+.git/
+.gitignore
+
+# Build script itself
+build.sh
+
+# Docker
+docker-compose.yml
+.env.example
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
