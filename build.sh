@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 IMAGE_NAME="opencode-serve"
 IMAGE_TAG="latest"
 REGISTRY="registry.cn-hangzhou.aliyuncs.com/jiefengnewsv2"
-PLATFORM="linux/amd64"
+PLATFORM="${DOCKER_PLATFORM:-}"
 PUSH=false
 DRY_RUN=false
 MODE="app"
@@ -50,8 +50,10 @@ run() {
 if [ "$MODE" = "base" ]; then
   BASE_TAG="${IMAGE_TAG:-latest}"
   echo "=== Building base image: opencode-serve-base:${BASE_TAG} ==="
+  PLATFORM_ARG=()
+  [ -n "$PLATFORM" ] && PLATFORM_ARG=(--platform "$PLATFORM")
   run docker build \
-    --platform "$PLATFORM" \
+    "${PLATFORM_ARG[@]}" \
     -t "opencode-serve-base:${BASE_TAG}" \
     -f "$SCRIPT_DIR/Dockerfile.base" \
     "$SCRIPT_DIR"
@@ -72,7 +74,12 @@ fi
 VT_SOURCE="${VT_SOURCE:-../Vibe-Trading}"
 VENDOR_DIR="$SCRIPT_DIR/vendor/Vibe-Trading"
 
-if [ -d "$VT_SOURCE" ]; then
+if [[ "$VT_SOURCE" == http* ]]; then
+    echo "=== Cloning Vibe-Trading from $VT_SOURCE (mymain branch) ==="
+    rm -rf "$VENDOR_DIR"
+    git clone --depth 1 -b mymain "$VT_SOURCE" "$VENDOR_DIR"
+    echo "=== VT cloned: $(find "$VENDOR_DIR" -type f -name '*.py' | wc -l) Python files ==="
+elif [ -d "$VT_SOURCE" ]; then
     echo "=== Vendoring Vibe-Trading from $VT_SOURCE (mymain branch) ==="
     mkdir -p "$VENDOR_DIR"
     VT_BRANCH=$(cd "$VT_SOURCE" && git branch --show-current 2>/dev/null || echo "unknown")
@@ -93,7 +100,7 @@ fi
 
 echo "=== Building app image: ${IMAGE_NAME}:${IMAGE_TAG} ==="
 run docker build \
-  --platform "$PLATFORM" \
+  "${PLATFORM_ARG[@]}" \
   -t "${IMAGE_NAME}:${IMAGE_TAG}" \
   -f "$SCRIPT_DIR/Dockerfile" \
   "$SCRIPT_DIR"
