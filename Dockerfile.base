@@ -50,7 +50,8 @@ RUN pip install --no-cache-dir \
     tzdata \
     asyncio-nats-client
 
-ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers \
+    PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright/
 RUN playwright install chromium --with-deps 2>/dev/null || true
 
 RUN mkdir -p /workspace /home/opencode
