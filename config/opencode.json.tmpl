@@ -14,15 +14,17 @@
       "type": "local",
       "command": [
         "/opt/venv/bin/python",
-        "-c",
-        "from mcp_server import main; main()"
+        "/opt/vibe-trading/agent/mcp_server.py"
       ],
       "env": {
         "CLICKHOUSE_HOST": "{{ CLICKHOUSE_HOST }}",
         "CLICKHOUSE_PORT": "{{ CLICKHOUSE_PORT }}",
         "CLICKHOUSE_USER": "{{ CLICKHOUSE_USER }}",
         "CLICKHOUSE_PASSWORD": "{{ CLICKHOUSE_PASSWORD }}",
-        "CLICKHOUSE_DATABASE": "{{ CLICKHOUSE_DATABASE }}"
+        "CLICKHOUSE_DATABASE": "{{ CLICKHOUSE_DATABASE }}",
+        "VT_MEMORY": "full",
+        "VT_MEMORY_MCP_TOOLS": "1",
+        "VT_MEMORY_BASE_DIR": "/workspace/.vt-memory"
       }
     }
   },

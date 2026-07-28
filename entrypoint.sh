@@ -12,6 +12,12 @@ trap cleanup EXIT
 # ── Activate Python virtual environment ───────────────────────────────────────
 source /opt/venv/bin/activate 2>/dev/null || true
 
+# ── VT Memory: enable full lifecycle + MCP tools (mymain branch feature) ──────
+export VT_MEMORY="${VT_MEMORY:-full}"
+export VT_MEMORY_MCP_TOOLS="${VT_MEMORY_MCP_TOOLS:-1}"
+export VT_MEMORY_BASE_DIR="${VT_MEMORY_BASE_DIR:-/workspace/.vt-memory}"
+mkdir -p "$VT_MEMORY_BASE_DIR"
+
 # ── Fix broken venv symlinks (base image uv Python at /root/ is inaccessible) ──
 if [ -f /usr/bin/python3 ] && [ ! -x /opt/venv/bin/python3 ]; then
     ln -sf /usr/bin/python3 /opt/venv/bin/python
@@ -122,6 +128,25 @@ fi
 if [ -d /workspace/.opencode/node_modules ] && [ ! -e /home/opencode/.opencode/node_modules ]; then
     ln -sf /workspace/.opencode/node_modules /home/opencode/.opencode/node_modules
     echo "[entrypoint] Plugin cache symlinked: /workspace/.opencode/node_modules → /home/opencode/.opencode/node_modules"
+fi
+
+# ── Verify VT MCP server is importable ────────────────────────────────────────
+VERIFY_VT=$(/opt/venv/bin/python3 -c "
+import sys
+try:
+    sys.path.insert(0, '/opt/vibe-trading/agent')
+    from mcp_server import mcp
+    print('OK:' + str(len(mcp._tool_manager._tools)))
+except Exception as e:
+    print('FAIL:' + str(e))
+" 2>/dev/null || echo "FAIL:import_error")
+if echo "$VERIFY_VT" | grep -q "^OK:"; then
+    TOOL_COUNT=$(echo "$VERIFY_VT" | cut -d: -f2)
+    echo "[entrypoint] VT MCP server OK — $TOOL_COUNT tools registered"
+    echo "[entrypoint] VT_MEMORY=full, VT_MEMORY_MCP_TOOLS=1 → memory tools enabled"
+    echo "[entrypoint] VT_MEMORY_BASE_DIR=$VT_MEMORY_BASE_DIR"
+else
+    echo "[entrypoint] WARNING: VT MCP server import failed: $VERIFY_VT"
 fi
 
 # ── Start opencode serve ──────────────────────────────────────────────────────

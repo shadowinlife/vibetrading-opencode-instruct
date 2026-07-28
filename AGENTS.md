@@ -344,10 +344,22 @@ python .opencode/skills/html-report/scripts/reports/deploy_report.py <html_path>
 2. 需要严格顺序依赖的任务（如"先回测再根据结果调参再回测"）→ 顺序执行
 3. 用户明确要求顺序执行
 
-# VT 记忆能力（Memory Lifecycle）
+# VT 记忆能力（Memory Lifecycle）— Hook 自动触发
 
 ## 概述
-Vibe-Trading 内置记忆生命周期管理系统，支持跨会话知识积累与经验复用。记忆系统包括四个核心组件：
+Vibe-Trading 内置记忆生命周期管理系统，支持跨会话知识积累与经验复用。**记忆操作由 FastMCP middleware（MemoryGuard）自动触发，不依赖 LLM 手动调用。**
+
+### 自动触发机制（MemoryGuard Middleware）
+
+每次 OpenCode 通过 MCP 调用 VT 工具时，middleware 自动执行：
+
+| 阶段 | 动作 | 覆盖范围 |
+|------|------|---------|
+| 每次工具调用后 | `memory_save`（工具名、参数、结果、耗时） | 所有 59 个 VT MCP 工具 |
+| 回测/因子分析/交易日志后 | `memory_reflect`（sharpe、max_drawdown 等） | backtest、factor_analysis、analyze_trade_journal 等 |
+| 容器启动时 | `memory_status` 验证（entrypoint 日志） | 启动阶段 |
+
+**记忆存储位置**：`/workspace/.vt-memory/`（通过 `VT_MEMORY_BASE_DIR` 环境变量配置，docker-compose volume 持久化）
 
 ### 1. 反思课程存储（Reflections Store）
 - **存储格式**: JSONL append-only 文件，位于 `~/.vibe-trading/memory/reflections/`
@@ -355,13 +367,15 @@ Vibe-Trading 内置记忆生命周期管理系统，支持跨会话知识积累�
 - **自动触发**: 回测完成后自动生成反思（通过 `backtest-diagnose` Skill 钩子）
 
 ### 2. MCP 记忆工具（5 个工具）
+启用方式：`VT_MEMORY=full` + `VT_MEMORY_MCP_TOOLS=1`（镜像已预置，见 Dockerfile 和 entrypoint.sh）。
+
 | 工具 | 功能 | 使用场景 |
 |------|------|---------|
-| `save_memory` | 保存结构化记忆（名称+内容+标签） | 策略发现、市场洞察、用户偏好 |
-| `recall_memory` | 按名称/标签/关键词检索记忆 | 新任务前检索相关经验 |
-| `reinforce_memory` | 强化已有记忆（增加权重/更新内容） | 经验被再次验证时 |
-| `list_memories` | 列出所有记忆及元数据 | 记忆盘点、审计 |
-| `forget_memory` | 删除过时/错误的记忆 | 策略失效、数据过期 |
+| `memory_save` | 保存结构化记忆（名称+描述+内容+类型） | 策略发现、市场洞察、用户偏好 |
+| `memory_recall` | 关键词检索记忆（top_k + type_filter） | 新任务前检索相关经验 |
+| `memory_reinforce` | 强化/削弱记忆质量评分（event + source） | 经验被验证/推翻时 |
+| `memory_reflect` | 从回测结果提取反思课程（strategy_type + outcome） | 回测完成后自动/手动反思 |
+| `memory_status` | 报告记忆库统计（entry_count、avg_quality、gc_pending） | 记忆盘点、健康检查 |
 
 ### 3. 生命周期管理
 - **质量评分（Quality Scoring）**: 每条记忆有质量评分，基于来源可靠性、验证次数、时间衰减
@@ -374,10 +388,10 @@ Vibe-Trading 内置记忆生命周期管理系统，支持跨会话知识积累�
 - **跨会话持久化**: 所有记忆存储在 `~/.vibe-trading/memory/`，容器重启不丢失
 
 ## 记忆使用规则
-1. **每次回测/分析完成后必须保存反思**：调用 `save_memory` 记录关键发现、参数设置、失败原因。
-2. **新任务开始前必须先检索记忆**：调用 `recall_memory` 检查是否有相关历史经验。
+1. **每次回测/分析自动触发反思**：Middleware 自动调用 `memory_save` + `memory_reflect`，无需手动操作。
+2. **新任务前可手动检索**：调用 `memory_recall` 检查是否有相关历史经验（可选，非必须）。
 3. **记忆引用必须标注来源**：引用记忆中的结论时，注明记忆名称和保存时间。
-4. **策略失效时主动标记**：当发现某条经验不再适用，调用 `forget_memory` 或降低质量评分。
+4. **策略失效时手动标记**：当发现某条经验不再适用，调用 `memory_reinforce(name="...", event="user_reject")` 降低质量评分。
 5. **用户偏好优先记忆**：用户明确表达的偏好（如"我偏好低估值策略"）必须保存为高权重记忆。
 
 # 周期任务触发规范（CRITICAL）
@@ -412,7 +426,7 @@ Vibe-Trading 内置记忆生命周期管理系统，支持跨会话知识积累�
 1. 实际成交价 vs 信号触发价，计算滑点。
 2. 持仓期间最大浮盈/浮亏 vs 最终盈亏，评估出场时机。
 3. 是否遵守了交易前检查清单？未遵守的原因是什么？
-4. 将复盘结果保存为 VT 记忆（`save_memory`），标记为 `reflection` 类型。
+4. 将复盘结果保存为 VT 记忆（`memory_save`），标记为 `reflection` 类型。
 
 ## 周期性自检（每周/每月）
 1. 统计本周/本月所有策略信号的胜率、盈亏比、夏普比率。

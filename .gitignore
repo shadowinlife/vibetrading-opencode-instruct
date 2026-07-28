@@ -18,6 +18,9 @@ __pycache__/
 # Docker
 docker-compose.override.yml
 
+# Vibe-Trading vendor source (copied at build time)
+vendor/
+
 # IDE
 .idea/
 .vscode/

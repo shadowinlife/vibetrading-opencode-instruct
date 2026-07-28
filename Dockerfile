@@ -48,11 +48,17 @@ RUN npm install -g opencode-ai@1.18.5
 RUN opencode plugin oh-my-openagent@latest
 
 # ---------------------------------------------------------------------------
-# 4. 补装 Python 包
+# 4. Vibe-Trading (mymain branch, 从 vendor/ COPY + editable install)
+#    mymain 分支独有: ClickHouse 数据源 + Memory Lifecycle (5 MCP tools)
+# ---------------------------------------------------------------------------
+COPY vendor/Vibe-Trading/ /opt/vibe-trading/
+RUN /opt/venv/bin/pip install --no-cache-dir -e /opt/vibe-trading/
+
+# ---------------------------------------------------------------------------
+# 5. 补装 Python 包
 #    注意: nano-search-mcp 不在 PyPI, 通过 COPY 源码 + editable install
 # ---------------------------------------------------------------------------
 RUN /opt/venv/bin/pip install --no-cache-dir \
-    clickhouse-connect \
     playwright \
     plotly \
     kaleido \
@@ -63,7 +69,6 @@ RUN /opt/venv/bin/pip install --no-cache-dir \
     pycryptodome \
     binance-connector \
     alpaca-trade-api \
-    bottleneck \
     lz4 \
     logistro \
     pytest \
@@ -72,18 +77,18 @@ RUN /opt/venv/bin/pip install --no-cache-dir \
     asyncio-nats-client
 
 # ---------------------------------------------------------------------------
-# 5. nano-search-mcp (不在 PyPI, 从源码 COPY + editable install)
+# 6. nano-search-mcp (不在 PyPI, 从源码 COPY + editable install)
 # ---------------------------------------------------------------------------
 COPY nano-search-mcp/ /opt/nano-search-mcp/
 RUN /opt/venv/bin/pip install --no-cache-dir -e /opt/nano-search-mcp
 
 # ---------------------------------------------------------------------------
-# 6. Playwright 浏览器 (chromium, 用于网页抓取)
+# 7. Playwright 浏览器 (chromium, 用于网页抓取)
 # ---------------------------------------------------------------------------
 RUN /opt/venv/bin/playwright install chromium --with-deps 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
-# 7. 配置文件
+# 8. 配置文件
 # ---------------------------------------------------------------------------
 COPY config/opencode.json.tmpl /workspace/.opencode/opencode.json.tmpl
 COPY config/oh-my-openagent.json /workspace/.opencode/oh-my-openagent.json
@@ -96,19 +101,19 @@ COPY AGENTS.md /workspace/AGENTS.md
 COPY skills/ /workspace/.opencode/skills/
 
 # ---------------------------------------------------------------------------
-# 8. 工作区文件
+# 9. 工作区文件
 # ---------------------------------------------------------------------------
 COPY workspace/scripts/ /workspace/scripts/
 COPY workspace/cron_jobs/ /workspace/cron_jobs/
 
 # ---------------------------------------------------------------------------
-# 9. 入口脚本
+# 10. 入口脚本
 # ---------------------------------------------------------------------------
 COPY entrypoint.sh /workspace/entrypoint.sh
 RUN chmod +x /workspace/entrypoint.sh
 
 # ---------------------------------------------------------------------------
-# 10. 运行时目录
+# 11. 运行时目录
 # ---------------------------------------------------------------------------
 RUN mkdir -p /workspace/analysis \
              /workspace/reports \
@@ -118,16 +123,19 @@ RUN mkdir -p /workspace/analysis \
              /workspace/cron_jobs/state
 
 # ---------------------------------------------------------------------------
-# 11. 环境变量
+# 12. 环境变量 (VT Memory 全量开启)
 # ---------------------------------------------------------------------------
 ENV LANGCHAIN_PROVIDER=dashscope \
     LANGCHAIN_MODEL_NAME=qwen3.7-max \
     DASHSCOPE_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1 \
     LANGCHAIN_TEMPERATURE=0.3 \
-    TZ=Asia/Shanghai
+    TZ=Asia/Shanghai \
+    VT_MEMORY=full \
+    VT_MEMORY_MCP_TOOLS=1 \
+    VT_MEMORY_BASE_DIR=/workspace/.vt-memory
 
 # ---------------------------------------------------------------------------
-# 12. 暴露端口 + 健康检查
+# 13. 暴露端口 + 健康检查
 # ---------------------------------------------------------------------------
 EXPOSE 4096
 
@@ -135,7 +143,7 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -sf -o /dev/null http://localhost:4096/health || exit 1
 
 # ---------------------------------------------------------------------------
-# 13. 运行时用户 + 入口点
+# 14. 运行时用户 + 入口点
 # ---------------------------------------------------------------------------
 USER opencode
 

@@ -52,6 +52,42 @@ run() {
 }
 
 # ---------------------------------------------------------------------------
+# 0. Vendor: Copy Vibe-Trading mymain branch into build context
+# ---------------------------------------------------------------------------
+VT_SOURCE="${VT_SOURCE:-../Vibe-Trading}"
+VENDOR_DIR="$SCRIPT_DIR/vendor/Vibe-Trading"
+
+if [ -d "$VT_SOURCE" ]; then
+    echo "=== Vendoring Vibe-Trading from $VT_SOURCE (mymain branch) ==="
+    mkdir -p "$VENDOR_DIR"
+    # Verify mymain branch is checked out
+    VT_BRANCH=$(cd "$VT_SOURCE" && git branch --show-current 2>/dev/null || echo "unknown")
+    if [ "$VT_BRANCH" != "mymain" ]; then
+        echo "WARNING: VT source is on branch '$VT_BRANCH', expected 'mymain'"
+        echo "         Build may not include ClickHouse + Memory features"
+    fi
+    # Copy only Python agent code (exclude frontend, git, tests, node_modules)
+    rsync -a \
+        --exclude='.git' \
+        --exclude='frontend/' \
+        --exclude='node_modules/' \
+        --exclude='__pycache__/' \
+        --exclude='*.pyc' \
+        --exclude='*.egg-info/' \
+        --exclude='.venv/' \
+        --exclude='.codex/' \
+        --exclude='assets/' \
+        --exclude='tests/' \
+        --exclude='agent/tests/' \
+        "$VT_SOURCE/" "$VENDOR_DIR/"
+    echo "=== VT vendored: $(find "$VENDOR_DIR" -type f -name '*.py' | wc -l) Python files ==="
+else
+    echo "ERROR: Vibe-Trading source not found at $VT_SOURCE"
+    echo "       Set VT_SOURCE env var or clone VT into ../Vibe-Trading"
+    exit 1
+fi
+
+# ---------------------------------------------------------------------------
 # Build
 # ---------------------------------------------------------------------------
 echo "=== Building Docker image: ${IMAGE_NAME}:${IMAGE_TAG} ==="

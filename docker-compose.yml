@@ -12,6 +12,7 @@ services:
     volumes:
       - ./volumes/cron-state:/workspace/cron_jobs/state
       - ./volumes/cron-logs:/workspace/cron_jobs/logs
+      - ./volumes/vt-memory:/workspace/.vt-memory
     deploy:
       resources:
         limits:
