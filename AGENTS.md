@@ -3,6 +3,8 @@
 2. 主数据源为 ClickHouse，通过 `data-warehouse` Skill 访问（`query_warehouse(sql)` 和 `list_tables()` 工具），不再使用 DuckDB。
 3. 可复用 ClickHouse SQL 查询放 `./sql/`，视图定义文档放 `./docs/views/`。
 4. 临时脚本、中间文件、下载材料放 `./tmp/<session-id>_*`。
+5. **Vibe-Trading 来源**: 镜像使用 `shadowinlife/Vibe-Trading` 的 `mymain` 分支（非 PyPI 版本），包含 ClickHouse 数据源 + MemoryGuard 中间件。构建时 `build.sh` 自动从 `../Vibe-Trading` 复制源码到 `vendor/`，`Dockerfile` 以 editable install 方式安装。
+6. **记忆存储**: `/workspace/.vt-memory/`，通过 `docker-compose.yml` 挂载 `volumes/vt-memory` 持久化。容器重启不丢失。
 
 # 数据采集能力
 1. A 股分析优先用 `data-warehouse` Skill 查询 ClickHouse，覆盖 199 列 T-1 历史数据。
@@ -315,7 +317,7 @@ python .opencode/skills/html-report/scripts/reports/deploy_report.py <html_path>
 | 技术分析 | `technical-basic` / `candlestick` / `ichimoku` / `elliott-wave` / `harmonic` / `smc` (vibe-trading) | 技术面、K线形态、缠论 |
 | 风险管理 | `risk-analysis` (vibe-trading) | VaR、CVaR、最大回撤、压力测试 |
 | **OMO 任务规划** | **oh-my-openagent（Prometheus 分解 + 并行子代理）** | **复杂任务、多步骤、并行执行** |
-| **VT 记忆能力** | **memory-lifecycle（reflections/MCP adapter/persistent/hierarchy）** | **记忆、反思、跨会话、经验积累** |
+| **VT 记忆能力** | **memory-lifecycle（MemoryGuard middleware + reflections/MCP adapter/persistent/hierarchy）** | **记忆、反思、跨会话、经验积累、自动触发** |
 
 # OMO 任务规划与子代理并行
 
