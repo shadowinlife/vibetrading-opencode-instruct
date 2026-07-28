@@ -10,14 +10,14 @@ PUSH=false
 DRY_RUN=false
 MODE="app"
 
-for arg in "$@"; do
-  case "$arg" in
+while [[ $# -gt 0 ]]; do
+  case "$1" in
     --tag)        IMAGE_TAG="$2"; shift 2 ;;
-    --tag=*)      IMAGE_TAG="${arg#*=}" ;;
-    --push)       PUSH=true ;;
-    --dry-run)    DRY_RUN=true ;;
-    --base)       MODE="base" ;;
-    --app)        MODE="app" ;;
+    --tag=*)      IMAGE_TAG="${1#*=}"; shift ;;
+    --push)       PUSH=true; shift ;;
+    --dry-run)    DRY_RUN=true; shift ;;
+    --base)       MODE="base"; shift ;;
+    --app)        MODE="app"; shift ;;
     --help|-h)
       echo "Usage: $0 [--base|--app] [--tag TAG] [--push] [--dry-run]"
       echo ""
@@ -31,7 +31,7 @@ for arg in "$@"; do
       echo "  --dry-run     Show commands without executing"
       exit 0
       ;;
-    *) ;;
+    *) shift ;;
   esac
 done
 
