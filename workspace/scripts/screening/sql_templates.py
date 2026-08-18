@@ -1,7 +1,18 @@
-"""Parameterized DuckDB SQL templates for stock screening.
+"""Parameterized ClickHouse SQL templates for stock screening.
 
-All templates use {param} placeholders that are filled by the screening functions.
-Standard conditions (from audit 2026-06-28):
+Data layer: these templates run against the Vibe-Trading ClickHouse
+warehouse (tushare table names are kept verbatim: ``fin_indicator``,
+``stk_factor_pro``, ``stk_info``, ``stk_st_daily``).  They were converted
+from the original DuckDB dialect with ClickHouse semantics in mind:
+
+  - divisors use ``10000.0`` so division is floating-point even when the
+    underlying column is integral (ClickHouse ``/`` truncates for integers);
+  - no DuckDB-isms remain (``strftime`` → ``formatDateTime``, ``QUALIFY`` →
+    window subquery, ``median`` → ``quantile(0.5)`` — none of these were
+    actually used here, medians are computed in pandas).
+
+All templates use {param} placeholders that are filled by the screening
+functions.  Standard conditions (from audit 2026-06-28):
   - ROE >= 8% (inclusive, was > 8 in v1)
   - Revenue YoY > 0%
   - Net profit YoY > -20%
@@ -25,7 +36,7 @@ SELECT
     ROUND(f.debt_to_assets, 2)     AS debt_ratio,
     ROUND(p.pe_ttm, 2)             AS pe_ttm,
     ROUND(p.pb, 2)                 AS pb,
-    ROUND(p.total_mv / 10000, 2)   AS total_mv_yi,
+    ROUND(p.total_mv / 10000.0, 2) AS total_mv_yi,
     ROUND(p.dv_ttm, 4)             AS dv_ttm
 FROM fin_indicator f
 JOIN stk_info si ON f.ts_code = si.ts_code
@@ -51,7 +62,7 @@ SELECT
     ROUND(p.pb, 2)                 AS pb,
     ROUND(p.ps_ttm, 2)             AS ps_ttm,
     ROUND(p.dv_ttm, 4)             AS dv_ttm,
-    ROUND(p.total_mv / 10000, 2)   AS total_mv_yi,
+    ROUND(p.total_mv / 10000.0, 2) AS total_mv_yi,
     ROUND(p.turnover_rate, 2)      AS turnover_rate,
     ROUND(p.pct_chg, 2)            AS pct_chg
 FROM stk_factor_pro p

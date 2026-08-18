@@ -38,11 +38,9 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
-import duckdb
 import pandas as pd
 
-from .base import format_date, get_connection, write_json
-from .metadata import DEFAULT_DUCKDB_PATH
+from .base import ClickHouseConnector, format_date, get_connection, query_dataframe, write_json
 
 # ── Known major ETF codes (for concentration analysis) ─────────────────────
 MAJOR_ETF_CODES: tuple[str, ...] = (
@@ -89,8 +87,8 @@ def _build_where_clause(
         Date strings (``YYYYMMDD`` for VARCHAR columns, ``YYYY-MM-DD`` for DATE).
     date_col : str
         Column expression to use in comparisons (default ``trade_date``).
-        Use ``strptime(trade_date, '%Y%m%d')`` when the source column is VARCHAR(YYYYMMDD).
-        but comparison values are YYYYMMDD strings.
+        Keep the raw column when the source stores VARCHAR(YYYYMMDD) and the
+        comparison values are YYYYMMDD strings.
     """
     clauses: list[str] = []
     if start_date is not None:
@@ -104,13 +102,13 @@ def _build_where_clause(
 
 
 def load_etf_turnover_ratio(
-    con_or_path: duckdb.DuckDBPyConnection | str = DEFAULT_DUCKDB_PATH,
+    conn: ClickHouseConnector | None = None,
     *,
     start_date: str | None = None,
     end_date: str | None = None,
     broad_coverage_only: bool = True,
 ) -> pd.DataFrame:
-    """Load daily ETF-to-market turnover ratio from local DuckDB.
+    """Load daily ETF-to-market turnover ratio from the ClickHouse warehouse.
 
     Computes two aggregations per trading day:
 
@@ -123,7 +121,9 @@ def load_etf_turnover_ratio(
 
     Parameters
     ----------
-    con_or_path : DuckDB connection or path string
+    conn : ClickHouseConnector or None
+        Vibe-Trading ClickHouse connector.  When ``None`` (default) a
+        connector is created from ``CLICKHOUSE_*`` environment config.
     start_date : str or None
         Inclusive start date (``YYYYMMDD`` string).
     end_date : str or None
@@ -156,57 +156,52 @@ def load_etf_turnover_ratio(
     where_etf = _build_where_clause(effective_start_varchar, end_date)
     where_mkt = _build_where_clause(effective_start_date, effective_end_date)
 
-    own_connection = isinstance(con_or_path, str)
-    if own_connection:
-        con = get_connection(con_or_path, read_only=True)
-    else:
-        con = con_or_path
+    if conn is None:
+        conn = get_connection()
 
-    try:
-        query = f"""
-        WITH etf_agg AS (
-            SELECT
-                strptime(trade_date, '%Y%m%d') AS trade_date,
-                SUM(amount)                  AS etf_amount_kyuan,
-                COUNT(DISTINCT ts_code)      AS etf_code_count
-            FROM fund_daily
-            WHERE amount IS NOT NULL AND amount > 0
-                  {where_etf}
-            GROUP BY trade_date
-        ),
-        mkt_agg AS (
-            SELECT
-                trade_date,
-                SUM(amount)                  AS market_amount_kyuan
-            FROM stk_factor_pro
-            WHERE amount IS NOT NULL
-              AND amount > 0
-              AND (ts_code LIKE '%.SH' OR ts_code LIKE '%.SZ' OR ts_code LIKE '%.BJ')
-                  {where_mkt}
-            GROUP BY trade_date
-        )
+    # fund_daily.trade_date is VARCHAR(YYYYMMDD); stk_factor_pro.trade_date is
+    # 'YYYY-MM-DD'.  Normalise both sides to Date so the join key is typed.
+    query = f"""
+    WITH etf_agg AS (
         SELECT
-            e.trade_date,
-            e.etf_amount_kyuan,
-            m.market_amount_kyuan,
-            e.etf_code_count,
-            e.etf_amount_kyuan / NULLIF(m.market_amount_kyuan, 0)
-                AS etf_turnover_ratio
-        FROM etf_agg e
-        INNER JOIN mkt_agg m ON e.trade_date = m.trade_date
-        ORDER BY e.trade_date
-        """
-        df = con.execute(query).fetchdf()
-    finally:
-        if own_connection:
-            con.close()
+            toDate(parseDateTime(trade_date, '%Y%m%d')) AS trade_date,
+            SUM(amount)                  AS etf_amount_kyuan,
+            COUNT(DISTINCT ts_code)      AS etf_code_count
+        FROM fund_daily
+        WHERE amount IS NOT NULL AND amount > 0
+              {where_etf}
+        GROUP BY trade_date
+    ),
+    mkt_agg AS (
+        SELECT
+            toDate(trade_date)           AS trade_date,
+            SUM(amount)                  AS market_amount_kyuan
+        FROM stk_factor_pro
+        WHERE amount IS NOT NULL
+          AND amount > 0
+          AND (ts_code LIKE '%.SH' OR ts_code LIKE '%.SZ' OR ts_code LIKE '%.BJ')
+              {where_mkt}
+        GROUP BY trade_date
+    )
+    SELECT
+        e.trade_date,
+        e.etf_amount_kyuan,
+        m.market_amount_kyuan,
+        e.etf_code_count,
+        e.etf_amount_kyuan / NULLIF(m.market_amount_kyuan, 0)
+            AS etf_turnover_ratio
+    FROM etf_agg e
+    INNER JOIN mkt_agg m ON e.trade_date = m.trade_date
+    ORDER BY e.trade_date
+    """
+    df = query_dataframe(conn, query)
 
     df["trade_date"] = pd.to_datetime(df["trade_date"])
     return df
 
 
 def load_etf_concentration(
-    con_or_path: duckdb.DuckDBPyConnection | str = DEFAULT_DUCKDB_PATH,
+    conn: ClickHouseConnector | None = None,
     *,
     start_date: str | None = None,
     end_date: str | None = None,
@@ -220,7 +215,9 @@ def load_etf_concentration(
 
     Parameters
     ----------
-    con_or_path : DuckDB connection or path string
+    conn : ClickHouseConnector or None
+        Vibe-Trading ClickHouse connector.  When ``None`` (default) a
+        connector is created from ``CLICKHOUSE_*`` environment config.
     start_date, end_date : str or None
     broad_coverage_only : bool
     top_n : int
@@ -242,62 +239,53 @@ def load_etf_concentration(
 
     where_clause = _build_where_clause(effective_start, end_date)
 
-    own_connection = isinstance(con_or_path, str)
-    if own_connection:
-        con = get_connection(con_or_path, read_only=True)
-    else:
-        con = con_or_path
+    if conn is None:
+        conn = get_connection()
 
-    try:
-        query = f"""
-        WITH daily_all AS (
+    query = f"""
+    WITH daily_all AS (
+        SELECT
+            toDate(parseDateTime(trade_date, '%Y%m%d')) AS trade_date,
+            COUNT(DISTINCT ts_code)              AS etf_code_count,
+            SUM(amount)                          AS total_etf_amount_kyuan
+        FROM fund_daily
+        WHERE amount IS NOT NULL AND amount > 0
+              {where_clause}
+        GROUP BY trade_date
+    ),
+    daily_top AS (
+        SELECT
+            toDate(parseDateTime(trade_date, '%Y%m%d')) AS trade_date,
+            SUM(amount)                          AS top_n_amount_kyuan
+        FROM (
             SELECT
-                strptime(trade_date, '%Y%m%d') AS trade_date,
-                COUNT(DISTINCT ts_code)              AS etf_code_count,
-                SUM(amount)                          AS total_etf_amount_kyuan
+                trade_date,
+                ts_code,
+                amount,
+                ROW_NUMBER() OVER (
+                    PARTITION BY trade_date ORDER BY amount DESC
+                ) AS rn
             FROM fund_daily
             WHERE amount IS NOT NULL AND amount > 0
                   {where_clause}
-            GROUP BY trade_date
-        ),
-        daily_top AS (
-            SELECT
-                strptime(trade_date, '%Y%m%d') AS trade_date,
-                SUM(amount)                          AS top_n_amount_kyuan
-            FROM (
-                SELECT
-                    trade_date,
-                    ts_code,
-                    amount,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY trade_date ORDER BY amount DESC
-                    ) AS rn
-                FROM fund_daily
-                WHERE amount IS NOT NULL AND amount > 0
-                      {where_clause}
-            ) ranked
-            WHERE rn <= {top_n}
-            GROUP BY trade_date
-        )
-        SELECT
-            a.trade_date,
-            a.etf_code_count,
-            t.top_n_amount_kyuan,
-            a.total_etf_amount_kyuan,
-            t.top_n_amount_kyuan / NULLIF(a.total_etf_amount_kyuan, 0)
-                AS top_n_concentration
-        FROM daily_all a
-        INNER JOIN daily_top t ON a.trade_date = t.trade_date
-        ORDER BY a.trade_date
-        """
-        df = con.execute(query).fetchdf()
-    finally:
-        if own_connection:
-            con.close()
-
-    df["trade_date"] = pd.to_datetime(
-        df["trade_date"], format="%Y%m%d"
+        ) ranked
+        WHERE rn <= {top_n}
+        GROUP BY trade_date
     )
+    SELECT
+        a.trade_date,
+        a.etf_code_count,
+        t.top_n_amount_kyuan,
+        a.total_etf_amount_kyuan,
+        t.top_n_amount_kyuan / NULLIF(a.total_etf_amount_kyuan, 0)
+            AS top_n_concentration
+    FROM daily_all a
+    INNER JOIN daily_top t ON a.trade_date = t.trade_date
+    ORDER BY a.trade_date
+    """
+    df = query_dataframe(conn, query)
+
+    df["trade_date"] = pd.to_datetime(df["trade_date"])
     return df
 
 
@@ -403,7 +391,7 @@ def _build_etf_heat_summary(
 ) -> dict[str, Any]:
     """Build structured summary from the signal DataFrame.
 
-    Pure function — no I/O, no DuckDB.  Testable offline.
+    Pure function — no I/O, no ClickHouse.  Testable offline.
     """
     latest = df_signal.iloc[-1]
     latest_trade_date: pd.Timestamp = pd.Timestamp(latest["trade_date"])
@@ -509,7 +497,7 @@ def _build_etf_heat_summary(
 
 
 def compute_etf_inflow_heat(
-    con_or_path: duckdb.DuckDBPyConnection | str = DEFAULT_DUCKDB_PATH,
+    conn: ClickHouseConnector | None = None,
     *,
     start_date: str | None = None,
     end_date: str | None = None,
@@ -521,12 +509,15 @@ def compute_etf_inflow_heat(
     """Compute the ETF inflow heat signal.
 
     This is the primary entry point.  It loads daily ETF-to-market turnover
-    ratio and top-5 concentration from local DuckDB, applies rolling-percentile
-    and concentration thresholds, and returns a structured summary.
+    ratio and top-5 concentration from the ClickHouse warehouse, applies
+    rolling-percentile and concentration thresholds, and returns a structured
+    summary.
 
     Parameters
     ----------
-    con_or_path : DuckDB connection or path string
+    conn : ClickHouseConnector or None
+        Vibe-Trading ClickHouse connector.  When ``None`` (default) a
+        connector is created from ``CLICKHOUSE_*`` environment config.
     start_date, end_date : str or None
         Date bounds in ``YYYYMMDD`` format.
     percentile_threshold : float
@@ -547,8 +538,11 @@ def compute_etf_inflow_heat(
         ``latest_top_n_concentration``, ``n_signal_days``, ``signal_pct``,
         ``daily_series``, ``unit_metadata``, ``major_etf_codes``.
     """
+    if conn is None:
+        conn = get_connection()
+
     df_ratio = load_etf_turnover_ratio(
-        con_or_path,
+        conn,
         start_date=start_date,
         end_date=end_date,
         broad_coverage_only=broad_coverage_only,
@@ -557,7 +551,7 @@ def compute_etf_inflow_heat(
         raise ValueError("No ETF turnover ratio data returned.")
 
     df_conc = load_etf_concentration(
-        con_or_path,
+        conn,
         start_date=start_date,
         end_date=end_date,
         broad_coverage_only=broad_coverage_only,
@@ -586,7 +580,7 @@ def compute_etf_inflow_heat(
 
 
 def load_etf_signal_series(
-    duckdb_path: str = DEFAULT_DUCKDB_PATH,
+    conn: ClickHouseConnector | None = None,
     *,
     percentile_threshold: float = 95.0,
     rolling_window: int = 252,
@@ -599,7 +593,9 @@ def load_etf_signal_series(
 
     Parameters
     ----------
-    duckdb_path : str
+    conn : ClickHouseConnector or None
+        Vibe-Trading ClickHouse connector.  When ``None`` (default) a
+        connector is created from ``CLICKHOUSE_*`` environment config.
     percentile_threshold : float
     rolling_window : int
     concentration_threshold : float
@@ -612,19 +608,20 @@ def load_etf_signal_series(
         Columns: ``trade_date``, ``etf_turnover_ratio``, ``roll_pct``,
         ``top_n_concentration``, ``pct_hit``, ``conc_hit``, ``signal``.
     """
-    with get_connection(duckdb_path, read_only=True) as con:
-        df_ratio = load_etf_turnover_ratio(
-            con,
-            start_date=start_date,
-            end_date=end_date,
-            broad_coverage_only=broad_coverage_only,
-        )
-        df_conc = load_etf_concentration(
-            con,
-            start_date=start_date,
-            end_date=end_date,
-            broad_coverage_only=broad_coverage_only,
-        )
+    if conn is None:
+        conn = get_connection()
+    df_ratio = load_etf_turnover_ratio(
+        conn,
+        start_date=start_date,
+        end_date=end_date,
+        broad_coverage_only=broad_coverage_only,
+    )
+    df_conc = load_etf_concentration(
+        conn,
+        start_date=start_date,
+        end_date=end_date,
+        broad_coverage_only=broad_coverage_only,
+    )
 
     df = compute_etf_heat_signal(
         df_ratio,

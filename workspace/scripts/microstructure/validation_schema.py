@@ -6,7 +6,7 @@ statistical separation, robustness, sub-period stability, correlation) and
 classification levels that downstream consumers use to decide whether a signal
 candidate can be promoted to ``ESCAPE_TOP_PRESETS``.
 
-This module defines the data model ONLY — no validation logic, no DuckDB, no
+This module defines the data model ONLY — no validation logic, no ClickHouse, no
 external APIs.  It serves as the contract that candidate-evaluation scripts
 must satisfy before a condition is accepted.
 """
@@ -105,7 +105,7 @@ class SourceMetadata:
     ``"custom:csi800_concentration"``)."""
 
     is_external: bool = False
-    """``True`` when the source is NOT in the local DuckDB snapshot and may
+    """``True`` when the source is NOT in the local ClickHouse warehouse and may
     drift independent of the sync pipeline."""
 
     effective_date: str | None = None

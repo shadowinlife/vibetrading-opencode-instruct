@@ -56,8 +56,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .base import get_connection, format_date
-from .metadata import DEFAULT_DUCKDB_PATH, SSE_INDEX_CODE
+from .base import ClickHouseConnector, get_connection, format_date, query_dataframe
+from .metadata import SSE_INDEX_CODE
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -97,7 +97,7 @@ DEFAULT_HORIZONS: tuple[int, ...] = (20, 60, 120)
 
 
 def _load_national_team_quarterly(
-    duckdb_path: str = DEFAULT_DUCKDB_PATH,
+    conn: ClickHouseConnector | None = None,
 ) -> pd.DataFrame:
     """Load quarterly aggregated national team holdings from ``fin_top10_holders``.
 
@@ -109,8 +109,9 @@ def _load_national_team_quarterly(
     reports with full coverage), False for 03-31 and 09-30 (sparse quarterly
     reports with very limited coverage).
     """
-    con = get_connection(duckdb_path, read_only=True)
-    df = con.execute(f"""
+    if conn is None:
+        conn = get_connection()
+    df = query_dataframe(conn, f"""
         SELECT
             end_date,
             COUNT(DISTINCT ts_code)                         AS stocks,
@@ -121,8 +122,7 @@ def _load_national_team_quarterly(
         WHERE {NATIONAL_TEAM_WHERE_CLAUSE}
         GROUP BY end_date
         ORDER BY end_date
-    """).fetchdf()
-    con.close()
+    """)
 
     df["end_date"] = pd.to_datetime(df["end_date"])
     df["is_full_quarter"] = df["end_date"].dt.month.isin(FULL_DATA_MONTHS)
@@ -130,19 +130,19 @@ def _load_national_team_quarterly(
 
 
 def _load_sse_close(
-    duckdb_path: str = DEFAULT_DUCKDB_PATH,
+    conn: ClickHouseConnector | None = None,
 ) -> pd.DataFrame:
     """Load SSE close prices from ``idx_factor_pro``.
 
     Returns columns ``trade_date``, ``sse_close``.
     """
-    con = get_connection(duckdb_path, read_only=True)
-    df = con.execute(
+    if conn is None:
+        conn = get_connection()
+    df = query_dataframe(
+        conn,
         "SELECT trade_date, close AS sse_close FROM idx_factor_pro "
-        "WHERE ts_code = ? ORDER BY trade_date",
-        [SSE_INDEX_CODE],
-    ).fetchdf()
-    con.close()
+        f"WHERE ts_code = '{SSE_INDEX_CODE}' ORDER BY trade_date",
+    )
     df["trade_date"] = pd.to_datetime(df["trade_date"])
     return df.reset_index(drop=True)
 
@@ -236,7 +236,7 @@ def _detect_consecutive_reductions(
 
 
 def compute_national_team_signals(
-    duckdb_path: str = DEFAULT_DUCKDB_PATH,
+    conn: ClickHouseConnector | None = None,
     *,
     consecutive_quarters: int = DEFAULT_CONSECUTIVE_QUARTERS,
     index_pct_threshold: float = DEFAULT_INDEX_PCT_THRESHOLD,
@@ -246,8 +246,9 @@ def compute_national_team_signals(
 
     Parameters
     ----------
-    duckdb_path : str
-        Path to the DuckDB database.
+    conn : ClickHouseConnector or None
+        Vibe-Trading ClickHouse connector.  When ``None`` (default) a
+        connector is created from ``CLICKHOUSE_*`` environment config.
     consecutive_quarters : int
         Number of consecutive full-data quarters with reducing holdings required
         to trigger the signal.  Default 2.
@@ -266,9 +267,12 @@ def compute_national_team_signals(
         ``is_reduction``, ``consecutive_reduction``, ``sse_close``,
         ``close_pct``, ``signal``.
     """
+    if conn is None:
+        conn = get_connection()
+
     # Load data
-    df_nt = _load_national_team_quarterly(duckdb_path)
-    df_sse = _load_sse_close(duckdb_path)
+    df_nt = _load_national_team_quarterly(conn)
+    df_sse = _load_sse_close(conn)
 
     # Compute changes
     df_nt = _compute_quarterly_changes(df_nt)
@@ -407,7 +411,7 @@ def evaluate_signals(
     df_nt: pd.DataFrame,
     *,
     horizons: tuple[int, ...] = DEFAULT_HORIZONS,
-    duckdb_path: str = DEFAULT_DUCKDB_PATH,
+    conn: ClickHouseConnector | None = None,
 ) -> dict[str, Any]:
     """Evaluate national team flow signals against forward drawdowns.
 
@@ -417,8 +421,8 @@ def evaluate_signals(
         Output of :func:`compute_national_team_signals`.
     horizons : tuple[int, ...]
         Forward drawdown horizons.
-    duckdb_path : str
-        Path to the DuckDB database (for loading SSE close).
+    conn : ClickHouseConnector or None
+        Vibe-Trading ClickHouse connector (for loading SSE close).
 
     Returns
     -------
@@ -426,7 +430,7 @@ def evaluate_signals(
         Keys: ``coverage``, ``signal_counts`` (list of per-horizon dicts),
         ``overall_classification``.
     """
-    df_sse = _load_sse_close(duckdb_path)
+    df_sse = _load_sse_close(conn)
     df = _compute_forward_drawdowns_from_sse(df_nt, df_sse, horizons=horizons)
 
     coverage_start = str(df["end_date"].min().date())
@@ -543,7 +547,7 @@ def evaluate_signals(
 
 
 def grid_search_national_team_signals(
-    duckdb_path: str = DEFAULT_DUCKDB_PATH,
+    conn: ClickHouseConnector | None = None,
     *,
     horizons: tuple[int, ...] = DEFAULT_HORIZONS,
     consecutive_quarters_values: tuple[int, ...] = (1, 2, 3),
@@ -555,13 +559,15 @@ def grid_search_national_team_signals(
     Returns a DataFrame with one row per parameter combination, including
     signal counts and mean forward drawdowns for each horizon.
     """
-    df_sse = _load_sse_close(duckdb_path)
+    if conn is None:
+        conn = get_connection()
+    df_sse = _load_sse_close(conn)
     rows: list[dict[str, Any]] = []
 
     for cq in consecutive_quarters_values:
         for iw in index_windows:
             df_nt = compute_national_team_signals(
-                duckdb_path,
+                conn,
                 consecutive_quarters=cq,
                 index_pct_threshold=50.0,  # placeholder, overridden per cell
                 index_window=iw,

@@ -7,9 +7,9 @@ import sys
 from datetime import date
 from pathlib import Path
 
-from .base import write_json
+from .base import connection_available, unavailable_payload, write_json
 from .concentration import compute_concentration
-from .metadata import DEFAULT_DUCKDB_PATH, DEFAULT_OUTPUT_DIR
+from .metadata import DEFAULT_OUTPUT_DIR
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -23,12 +23,6 @@ examples:
   python -m scripts.microstructure.concentration_cli --output ./tmp/my_summary.json
   python -m scripts.microstructure.concentration_cli --start-date 2024-01-02
   python -m scripts.microstructure.concentration_cli --start-date 2024-01-02 --end-date 2025-01-02""",
-    )
-    parser.add_argument(
-        "--duckdb-path",
-        default=DEFAULT_DUCKDB_PATH,
-        metavar="PATH",
-        help=f"path to DuckDB file (default: {DEFAULT_DUCKDB_PATH})",
     )
     parser.add_argument(
         "--output",
@@ -73,6 +67,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
+    if not connection_available():
+        print(json.dumps(unavailable_payload(), ensure_ascii=False))
+        return 0
+
     start_date_raw: date | None = (
         date.fromisoformat(args.start_date) if args.start_date else None
     )
@@ -82,7 +80,6 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         result = compute_concentration(
-            args.duckdb_path,
             top_pct=args.top_pct,
             start_date=start_date_raw,
             end_date=end_date_raw,

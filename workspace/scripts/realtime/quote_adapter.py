@@ -1,8 +1,22 @@
-"""Normalized quote adapter with fallback chains, retry, and freshness.
+"""Normalized quote adapter backed by the Vibe-Trading market-data federation.
 
-Provides a unified ``get_quote()`` interface across A-shares, ETFs, and HK
-stocks with ordered fallback chains, exponential-backoff retry, rate-limit
-awareness, and data-freshness validation.
+Data layer
+----------
+The previous provider chain (akshare spot tables, yfinance, tushare daily,
+local DuckDB snapshot) has been replaced by a single source: Vibe-Trading's
+``src.market_data.fetch_market_data`` federation.  For each requested symbol
+the adapter fetches a short recent daily window through the federation with
+``source="auto"`` (which walks the per-market loader chain, e.g. ClickHouse
+→ Tencent/mootdx → Eastmoney → … for A-shares) and takes the latest bar as
+the quote.  A single retry with backoff covers empty results.
+
+Intraday volume/amount extrapolation has been REMOVED together with the
+former dependency on ``scripts.backtest.intraday_adjust``: when the
+federation can serve a same-day bar the quote reflects it; otherwise the
+latest bar is the last settled daily bar (typically T-1) and the metadata
+says so honestly — ``meta["fresh"]`` / ``meta["stale_reason"]`` reflect the
+real age of the latest bar, and ``meta["note"]`` states explicitly when the
+quote is only a T-N daily close.
 
 Output contract — always a DataFrame with these 10 columns::
 
@@ -10,37 +24,26 @@ Output contract — always a DataFrame with these 10 columns::
 
 Usage::
 
-    from scripts.realtime.quote_adapter import get_quote
+    from scripts.realtime.quote_adapter import get_quote, get_quote_with_meta
 
-    # Simple (backward-compatible — single provider, no fallback):
-    df = get_quote("000001", market="A")
+    df = get_quote("000001.SZ", market="A")
+    df, meta = get_quote_with_meta("000001.SZ", market="A", freshness_minutes=30)
+    # meta = {"provider": "vibe-trading federation", "attempts": 1,
+    #         "fresh": False, "stale_reason": "quote_age=...",
+    #         "note": "latest bar is T-1 daily close; ...", ...}
 
-    # With fallback chain + freshness:
-    df = get_quote("000001", market="A",
-                   fallback_chain=[("duckdb", duckdb_fn, "duckdb"),
-                                   ("akshare", akshare_fn, "akshare")],
-                   freshness_minutes=15)
-
-    # Rich result with metadata:
-    from scripts.realtime.quote_adapter import get_quote_with_meta
-    df, meta = get_quote_with_meta("000001", market="A",
-                                    fallback_chain=chain,
-                                    freshness_minutes=15)
-    # meta = {"provider": "akshare", "attempts": 2, "fresh": True, ...}
-
-    # For testing — inject mock providers:
-    df = get_quote("000001", market="A", providers={"A": my_mock_fn})
+    # For testing — inject mock providers (must return English column names):
+    df = get_quote("000001.SZ", market="A", providers={"A": my_mock_fn})
 """
 
 from __future__ import annotations
 
 import logging
-import os
+import math
 import re
 import time
-from datetime import datetime
-from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from datetime import date, timedelta
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -50,68 +53,16 @@ logger = logging.getLogger(__name__)
 # Module-level config (tests can override _sleep_fn to avoid real delays)
 # ---------------------------------------------------------------------------
 
-_DEFAULT_MAX_RETRIES = 3
+_DEFAULT_MAX_RETRIES = 2  # initial attempt + one retry on empty result
 _BACKOFF_BASE_SECONDS = 1  # exponential: 1s, 2s, 4s
 _sleep_fn: Callable[[float], None] = time.sleep  # replaceable for tests
 
-# ---------------------------------------------------------------------------
-# Column name mappings (Chinese → English)
-# ---------------------------------------------------------------------------
+# Calendar days fetched backwards so at least one settled bar is present
+# even after long market holidays.
+_LOOKBACK_DAYS = 21
 
-# akshare A-share spot columns (ak.stock_zh_a_spot_em)
-_A_SHARE_COL_MAP = {
-    "代码": "symbol",
-    "今开": "open",
-    "最高": "high",
-    "最低": "low",
-    "最新价": "close",
-    "成交量": "volume",
-    "成交额": "amount",
-}
-
-# akshare ETF spot columns (ak.fund_etf_spot_em)
-_ETF_COL_MAP = {
-    "代码": "symbol",
-    "开盘价": "open",
-    "最高价": "high",
-    "最低价": "low",
-    "最新价": "close",
-    "成交量": "volume",
-    "成交额": "amount",
-}
-
-# akshare HK spot columns (ak.stock_hk_spot_em)
-_HK_AKSHARE_COL_MAP = {
-    "代码": "symbol",
-    "开盘价": "open",
-    "最高价": "high",
-    "最低价": "low",
-    "最新价": "close",
-    "成交量": "volume",
-    "成交额": "amount",
-}
-
-# DuckDB snapshot columns
-_DUCKDB_COL_MAP = {
-    "ts_code": "symbol",
-    "open": "open",
-    "high": "high",
-    "low": "low",
-    "close": "close",
-    "vol": "volume",
-    "amount": "amount",
-}
-
-# Tushare daily columns
-_TUSHARE_COL_MAP = {
-    "ts_code": "symbol",
-    "open": "open",
-    "high": "high",
-    "low": "low",
-    "close": "close",
-    "vol": "volume",
-    "amount": "amount",
-}
+_PROVIDER_NAME = "vibe-trading federation"
+_SOURCE_LABEL = "vibe-trading federation"
 
 # ---------------------------------------------------------------------------
 # Normalized output columns
@@ -129,259 +80,175 @@ _OUTPUT_COLUMNS = [
 _FRESH_KEY = "_quote_fresh"
 _STALE_REASON_KEY = "_quote_stale_reason"
 
+# ---------------------------------------------------------------------------
+# Symbol normalization into Vibe-Trading federation notation
+# ---------------------------------------------------------------------------
 
-# ===================================================================
-# Default provider implementations (lazy imports — no module-level deps)
-# ===================================================================
-
-# ---- DuckDB providers (local snapshot cache) ----
-
-def _get_duckdb_path() -> str:
-    """Resolve the DuckDB database path."""
-    return str(Path(__file__).resolve().parents[2] / "duckdb" / "ashare.duckdb")
+_A_SHARE_RE = re.compile(r"^\d{6}\.(SZ|SH|BJ)$", re.IGNORECASE)
+_BARE_CODE_RE = re.compile(r"^\d{6}$")
+_HK_CODE_RE = re.compile(r"^\d{3,5}$")
 
 
-def _duckdb_a_share_provider(symbol: str, **kwargs) -> pd.DataFrame:
-    """Fetch A-share quote from local DuckDB snapshot table."""
-    try:
-        import duckdb
-        db_path = _get_duckdb_path()
-        if not Path(db_path).exists():
-            return pd.DataFrame()
-        con = duckdb.connect(db_path, read_only=True)
-        try:
-            df = con.execute(
-                "SELECT ts_code, open, high, low, close, vol, amount, trade_date "
-                "FROM stk_snapshot "
-                "WHERE ts_code LIKE ? "
-                "ORDER BY trade_date DESC LIMIT 1",
-                [f"{symbol}%"],
-            ).fetchdf()
-        finally:
-            con.close()
-        if df.empty:
-            return pd.DataFrame()
-        row = df.iloc[0]
-        return pd.DataFrame([{
-            "symbol": str(row.get("ts_code", symbol)),
-            "open": float(row.get("open", 0)),
-            "high": float(row.get("high", 0)),
-            "low": float(row.get("low", 0)),
-            "close": float(row.get("close", 0)),
-            "volume": float(row.get("vol", 0)),
-            "amount": float(row.get("amount", 0)),
-            "timestamp": pd.Timestamp(row.get("trade_date", pd.Timestamp.now())),
-        }])
-    except Exception as e:
-        logger.debug("DuckDB A-share provider error: %s", e)
-        return pd.DataFrame()
+def _to_vt_symbol(symbol: str, market: str) -> str:
+    """Normalize a user-supplied symbol to the notation the federation routes.
 
-
-def _duckdb_etf_provider(symbol: str, **kwargs) -> pd.DataFrame:
-    """Fetch ETF quote from local DuckDB snapshot/fund_daily table."""
-    try:
-        import duckdb
-        db_path = _get_duckdb_path()
-        if not Path(db_path).exists():
-            return pd.DataFrame()
-        con = duckdb.connect(db_path, read_only=True)
-        try:
-            df = con.execute(
-                "SELECT ts_code, open, high, low, close, vol, amount, trade_date "
-                "FROM fund_daily "
-                "WHERE ts_code LIKE ? "
-                "ORDER BY trade_date DESC LIMIT 1",
-                [f"{symbol}%"],
-            ).fetchdf()
-        finally:
-            con.close()
-        if df.empty:
-            return pd.DataFrame()
-        row = df.iloc[0]
-        return pd.DataFrame([{
-            "symbol": str(row.get("ts_code", symbol)),
-            "open": float(row.get("open", 0)),
-            "high": float(row.get("high", 0)),
-            "low": float(row.get("low", 0)),
-            "close": float(row.get("close", 0)),
-            "volume": float(row.get("vol", 0)),
-            "amount": float(row.get("amount", 0)),
-            "timestamp": pd.Timestamp(row.get("trade_date", pd.Timestamp.now())),
-        }])
-    except Exception as e:
-        logger.debug("DuckDB ETF provider error: %s", e)
-        return pd.DataFrame()
-
-
-# ---- akshare providers ----
-
-def _default_a_share_provider(symbol: str, **kwargs) -> pd.DataFrame:
-    """Fetch A-share quote via akshare (lazy import).
-
-    Calls ``ak.stock_zh_a_spot_em()`` and filters by symbol code.
-    Returns raw DataFrame with Chinese column names.
+    A-share/ETF bare codes get an exchange suffix inferred from their first
+    digit; HK codes are zero-padded to 5 digits; US tickers get ``.US``.
+    Already-suffixed symbols pass through unchanged.
     """
-    import akshare as ak  # noqa: WPS433 — lazy import for testability
-
-    df = ak.stock_zh_a_spot_em()
-    filtered = df[df["代码"] == symbol]
-    return filtered
-
-
-def _default_etf_provider(symbol: str, **kwargs) -> pd.DataFrame:
-    """Fetch ETF quote via akshare (lazy import).
-
-    Calls ``ak.fund_etf_spot_em()`` and filters by symbol code.
-    Returns raw DataFrame with Chinese column names.
-    """
-    import akshare as ak  # noqa: WPS433 — lazy import for testability
-
-    df = ak.fund_etf_spot_em()
-    filtered = df[df["代码"] == symbol]
-    return filtered
-
-
-def _hk_akshare_provider(symbol: str, **kwargs) -> pd.DataFrame:
-    """Fetch HK stock quote via akshare (lazy import).
-
-    Calls ``ak.stock_hk_spot_em()`` and filters by symbol code.
-    Returns raw DataFrame with Chinese column names.
-    """
-    try:
-        import akshare as ak  # noqa: WPS433
-
-        df = ak.stock_hk_spot_em()
-        code = symbol.replace(".HK", "")
-        filtered = df[df["代码"] == code]
-        return filtered
-    except Exception as e:
-        logger.debug("akshare HK provider error: %s", e)
-        return pd.DataFrame()
-
-
-# ---- Tushare provider (A-share fallback, requires token) ----
-
-def _tushare_a_share_provider(symbol: str, **kwargs) -> pd.DataFrame:
-    """Fetch A-share quote via Tushare (lazy import, requires TUSHARE_TOKEN)."""
-    try:
-        import tushare as ts  # noqa: WPS433
-
-        token = os.environ.get("TUSHARE_TOKEN")
-        if not token:
-            logger.debug("TUSHARE_TOKEN not set, skipping Tushare provider")
-            return pd.DataFrame()
-        pro = ts.pro_api(token)
-        df = pro.daily(ts_code=symbol, limit=1)
-        if df.empty:
-            return pd.DataFrame()
-        row = df.iloc[0]
-        return pd.DataFrame([{
-            "symbol": str(row.get("ts_code", symbol)),
-            "open": float(row.get("open", 0)),
-            "high": float(row.get("high", 0)),
-            "low": float(row.get("low", 0)),
-            "close": float(row.get("close", 0)),
-            "volume": float(row.get("vol", 0)),
-            "amount": float(row.get("amount", 0)),
-            "timestamp": pd.Timestamp(row.get("trade_date", pd.Timestamp.now())),
-        }])
-    except Exception as e:
-        logger.debug("Tushare provider error: %s", e)
-        return pd.DataFrame()
-
-
-# ---- yfinance providers ----
-
-def _default_hk_provider(symbol: str, **kwargs) -> pd.DataFrame:
-    """Fetch HK stock quote via yfinance (lazy import).
-
-    Expects symbol in yfinance format (e.g., ``0700.HK``).
-    Returns DataFrame with English column names.
-    """
-    import yfinance as yf  # noqa: WPS433 — lazy import for testability
-
-    ticker = yf.Ticker(symbol)
-    info = ticker.fast_info
-    hist = ticker.history(period="1d")
-
-    if hist.empty:
-        return pd.DataFrame()
-
-    row = hist.iloc[-1]
-    return pd.DataFrame([{
-        "symbol": symbol,
-        "open": float(row.get("Open", 0)),
-        "high": float(row.get("High", 0)),
-        "low": float(row.get("Low", 0)),
-        "close": float(row.get("Close", 0)),
-        "volume": int(row.get("Volume", 0)),
-        "amount": float(row.get("Volume", 0)) * float(row.get("Close", 0)),  # approx
-        "timestamp": pd.Timestamp(row.name) if hasattr(row, "name") else pd.Timestamp.now(),
-    }])
-
-
-def _etf_yfinance_provider(symbol: str, **kwargs) -> pd.DataFrame:
-    """Fetch ETF quote via yfinance (lazy import, fallback for ETF)."""
-    try:
-        import yfinance as yf  # noqa: WPS433
-
-        ticker = yf.Ticker(symbol)
-        hist = ticker.history(period="1d")
-        if hist.empty:
-            return pd.DataFrame()
-        row = hist.iloc[-1]
-        return pd.DataFrame([{
-            "symbol": symbol,
-            "open": float(row.get("Open", 0)),
-            "high": float(row.get("High", 0)),
-            "low": float(row.get("Low", 0)),
-            "close": float(row.get("Close", 0)),
-            "volume": int(row.get("Volume", 0)),
-            "amount": float(row.get("Volume", 0)) * float(row.get("Close", 0)),
-            "timestamp": pd.Timestamp(row.name) if hasattr(row, "name") else pd.Timestamp.now(),
-        }])
-    except Exception as e:
-        logger.debug("yfinance ETF provider error: %s", e)
-        return pd.DataFrame()
+    s = symbol.strip().upper()
+    if market == "A":
+        if _A_SHARE_RE.match(s):
+            return s
+        if _BARE_CODE_RE.match(s):
+            if s[0] in "69":
+                return f"{s}.SH"
+            if s[0] in "48":
+                return f"{s}.BJ"
+            return f"{s}.SZ"
+        return s
+    if market == "ETF":
+        if _A_SHARE_RE.match(s):
+            return s
+        if _BARE_CODE_RE.match(s):
+            return f"{s}.SH" if s[0] in "56" else f"{s}.SZ"
+        return s
+    if market == "HK":
+        if s.endswith(".HK"):
+            code = s.split(".", 1)[0]
+            if _HK_CODE_RE.match(code):
+                return f"{code.zfill(5)}.HK"
+            return s
+        if _HK_CODE_RE.match(s):
+            return f"{s.zfill(5)}.HK"
+        return s
+    if market == "US":
+        return s if s.endswith(".US") else f"{s}.US"
+    return s
 
 
 # ---------------------------------------------------------------------------
-# Default provider registry (backward-compatible single-provider map)
+# Federation fetch
+# ---------------------------------------------------------------------------
+
+_BAR_DATE_KEYS = ("trade_date", "date", "datetime", "timestamp")
+
+
+def _num(value: Any) -> float:
+    """Coerce a federation field to a finite float (0.0 when missing)."""
+    try:
+        if value is None:
+            return 0.0
+        result = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return result if math.isfinite(result) else 0.0
+
+
+def _bar_date_key(record: Dict[str, Any]) -> Optional[str]:
+    return next((k for k in _BAR_DATE_KEYS if k in record), None)
+
+
+def _fetch_federation_quote(code: str) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
+    """Fetch the latest federation bar for *code*.
+
+    Returns ``(record_or_None, provenance_dict)``.  Raises when the ``src``
+    package is missing or every loader in the chain failed — the retry
+    wrapper records those errors.
+    """
+    from src.market_data import fetch_market_data
+
+    today = date.today()
+    start = (today - timedelta(days=_LOOKBACK_DAYS)).isoformat()
+    result = fetch_market_data(
+        codes=[code],
+        start_date=start,
+        end_date=today.isoformat(),
+        source="auto",
+        interval="1D",
+        max_rows=0,
+        include_provenance=True,
+    )
+
+    rows = result.get(code)
+    if isinstance(rows, dict):  # truncation envelope
+        rows = rows.get("data", [])
+    if not rows:
+        return None, {}
+
+    date_key = _bar_date_key(rows[-1])
+    if date_key is not None:
+        rows = sorted(rows, key=lambda r: str(r.get(date_key) or ""))
+    record = rows[-1]
+    provenance = (result.get("_provenance") or {}).get(code) or {}
+    return record, provenance
+
+
+def _make_vt_provider(market: str) -> Callable[[str], pd.DataFrame]:
+    """Build the federation quote provider for one market."""
+
+    def provider(symbol: str, **_kwargs) -> pd.DataFrame:
+        code = _to_vt_symbol(symbol, market)
+        record, provenance = _fetch_federation_quote(code)
+        if record is None:
+            return pd.DataFrame()
+
+        close = _num(record.get("close"))
+        volume = _num(record.get("volume"))
+        amount_raw = record.get("amount")
+        amount = _num(amount_raw) if amount_raw is not None else volume * close
+
+        date_key = _bar_date_key(record)
+        ts_raw = record.get(date_key) if date_key else None
+        try:
+            timestamp: Optional[pd.Timestamp] = (
+                pd.Timestamp(ts_raw) if ts_raw is not None else None
+            )
+        except (TypeError, ValueError):
+            timestamp = None
+
+        quote = pd.DataFrame([{
+            "symbol": symbol,
+            "open": _num(record.get("open")),
+            "high": _num(record.get("high")),
+            "low": _num(record.get("low")),
+            "close": close,
+            "volume": volume,
+            "amount": amount,
+            "timestamp": timestamp,
+        }])
+        quote.attrs["vt_meta"] = {
+            "latest_bar_date": str(ts_raw) if ts_raw is not None else None,
+            "volume_unit": provenance.get("volume_unit"),
+            "served_by": provenance.get("source"),
+            "fallback_used": bool(provenance.get("fallback_used", False)),
+        }
+        return quote
+
+    provider.__name__ = f"vt_federation_{market.lower()}_provider"
+    return provider
+
+
+# ---------------------------------------------------------------------------
+# Default provider registry and fallback chains
 # ---------------------------------------------------------------------------
 
 _DEFAULT_PROVIDERS: Dict[str, Callable] = {
-    "A": _default_a_share_provider,
-    "ETF": _default_etf_provider,
-    "HK": _default_hk_provider,
+    "A": _make_vt_provider("A"),
+    "ETF": _make_vt_provider("ETF"),
+    "HK": _make_vt_provider("HK"),
+    "US": _make_vt_provider("US"),
 }
 
-# Source labels per market (used in backward-compatible path)
 _SOURCE_LABELS: Dict[str, str] = {
-    "A": "akshare",
-    "ETF": "akshare",
-    "HK": "yfinance",
+    market: _SOURCE_LABEL for market in _DEFAULT_PROVIDERS
 }
 
-# ---------------------------------------------------------------------------
-# Default fallback chains per market
-# Each entry: (provider_name, provider_fn, source_label)
-# ---------------------------------------------------------------------------
-
+# One federation entry per market; the federation itself walks its internal
+# per-market loader chain, so no outer multi-provider chain is needed.
 _DEFAULT_FALLBACK_CHAINS: Dict[str, List[Tuple[str, Callable, str]]] = {
-    "A": [
-        ("duckdb", _duckdb_a_share_provider, "duckdb"),
-        ("akshare", _default_a_share_provider, "akshare"),
-        ("tushare", _tushare_a_share_provider, "tushare"),
-    ],
-    "ETF": [
-        ("duckdb", _duckdb_etf_provider, "duckdb"),
-        ("akshare", _default_etf_provider, "akshare"),
-        ("yfinance", _etf_yfinance_provider, "yfinance"),
-    ],
-    "HK": [
-        ("yfinance", _default_hk_provider, "yfinance"),
-        ("akshare", _hk_akshare_provider, "akshare"),
-    ],
+    market: [(_PROVIDER_NAME, fn, _SOURCE_LABEL)]
+    for market, fn in _DEFAULT_PROVIDERS.items()
 }
 
 
@@ -390,76 +257,17 @@ _DEFAULT_FALLBACK_CHAINS: Dict[str, List[Tuple[str, Callable, str]]] = {
 # ---------------------------------------------------------------------------
 
 
-def _normalize_akshare_row(
-    raw_df: pd.DataFrame,
-    col_map: dict,
-    symbol: str,
-    market: str,
-    source: str,
-) -> Optional[pd.DataFrame]:
-    """Normalize a single-row akshare DataFrame to the output contract."""
-    if raw_df.empty:
-        return None
-
-    row = raw_df.iloc[0]
-    normalized = {}
-
-    for cn_col, en_col in col_map.items():
-        if cn_col in row.index:
-            val = row[cn_col]
-            normalized[en_col] = float(val) if en_col != "symbol" else str(val)
-
-    # Fill required columns
-    normalized["symbol"] = symbol
-    normalized["market"] = market
-    normalized["source"] = source
-    normalized["timestamp"] = pd.Timestamp.now()
-
-    # Ensure all output columns present
-    for col in _OUTPUT_COLUMNS:
-        if col not in normalized:
-            normalized[col] = None
-
-    return pd.DataFrame([normalized])[_OUTPUT_COLUMNS]
-
-
-def _normalize_hk_row(
-    raw_df: pd.DataFrame,
-    symbol: str,
-    market: str,
-    source: str,
-) -> Optional[pd.DataFrame]:
-    """Normalize a yfinance HK DataFrame to the output contract."""
-    if raw_df.empty:
-        return None
-
-    row = raw_df.iloc[0]
-    normalized = {
-        "symbol": symbol,
-        "market": market,
-        "open": float(row.get("open", 0)),
-        "high": float(row.get("high", 0)),
-        "low": float(row.get("low", 0)),
-        "close": float(row.get("close", 0)),
-        "volume": float(row.get("volume", 0)),
-        "amount": float(row.get("amount", 0)),
-        "timestamp": row.get("timestamp", pd.Timestamp.now()),
-        "source": source,
-    }
-
-    return pd.DataFrame([normalized])[_OUTPUT_COLUMNS]
-
-
 def _normalize_generic_row(
     raw_df: pd.DataFrame,
     symbol: str,
     market: str,
     source: str,
 ) -> Optional[pd.DataFrame]:
-    """Normalize a pre-normalized DataFrame (DuckDB, Tushare, yfinance-ETF).
+    """Normalize a provider DataFrame (English column names) to the contract.
 
-    These providers already return English column names.  This helper ensures
-    all 10 output columns are present and correctly typed.
+    Ensures all 10 output columns are present and correctly typed.  Carries
+    ``raw_df.attrs["vt_meta"]`` forward so federation metadata reaches the
+    final meta dict.
     """
     if raw_df.empty:
         return None
@@ -468,17 +276,21 @@ def _normalize_generic_row(
     normalized = {
         "symbol": str(row.get("symbol", symbol)),
         "market": market,
-        "open": float(row.get("open", 0)),
-        "high": float(row.get("high", 0)),
-        "low": float(row.get("low", 0)),
-        "close": float(row.get("close", 0)),
-        "volume": float(row.get("volume", 0)),
-        "amount": float(row.get("amount", 0)),
-        "timestamp": row.get("timestamp", pd.Timestamp.now()),
+        "open": _num(row.get("open")),
+        "high": _num(row.get("high")),
+        "low": _num(row.get("low")),
+        "close": _num(row.get("close")),
+        "volume": _num(row.get("volume")),
+        "amount": _num(row.get("amount")),
+        "timestamp": row.get("timestamp"),
         "source": source,
     }
 
-    return pd.DataFrame([normalized])[_OUTPUT_COLUMNS]
+    out = pd.DataFrame([normalized])[_OUTPUT_COLUMNS]
+    vt_meta = raw_df.attrs.get("vt_meta")
+    if vt_meta:
+        out.attrs["vt_meta"] = vt_meta
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -568,6 +380,27 @@ def check_freshness(
     return True, None
 
 
+def _federation_note(
+    latest_bar_date: Optional[str],
+    now: Optional[pd.Timestamp] = None,
+) -> Optional[str]:
+    """Honest freshness note derived from the latest federation bar date."""
+    if not latest_bar_date:
+        return "federation returned no bar date"
+    try:
+        bar_date = pd.Timestamp(latest_bar_date).date()
+    except (TypeError, ValueError):
+        return None
+    ref_date = (now or pd.Timestamp.now()).date()
+    if bar_date >= ref_date:
+        return "same-day bar served by federation"
+    lag_days = (ref_date - bar_date).days
+    return (
+        f"latest bar is T-{lag_days} daily close; "
+        "intraday quote not available from federation"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Fallback chain execution (internal)
 # ---------------------------------------------------------------------------
@@ -592,34 +425,10 @@ def _get_quote_with_fallback(
         total_attempts += attempts
 
         if result is not None and not result.empty:
-            # --- Normalize ---
             try:
-                if source_label in ("akshare",):
-                    if market_upper == "A":
-                        normalized = _normalize_akshare_row(
-                            result, _A_SHARE_COL_MAP, symbol, market_upper, source_label,
-                        )
-                    elif market_upper == "ETF":
-                        normalized = _normalize_akshare_row(
-                            result, _ETF_COL_MAP, symbol, market_upper, source_label,
-                        )
-                    elif market_upper == "HK":
-                        normalized = _normalize_akshare_row(
-                            result, _HK_AKSHARE_COL_MAP, symbol, market_upper, source_label,
-                        )
-                    else:
-                        normalized = _normalize_generic_row(
-                            result, symbol, market_upper, source_label,
-                        )
-                elif market_upper == "HK" and source_label == "yfinance":
-                    normalized = _normalize_hk_row(
-                        result, symbol, market_upper, source_label,
-                    )
-                else:
-                    # DuckDB, Tushare, yfinance-ETF — already English columns
-                    normalized = _normalize_generic_row(
-                        result, symbol, market_upper, source_label,
-                    )
+                normalized = _normalize_generic_row(
+                    result, symbol, market_upper, source_label,
+                )
             except Exception as e:
                 logger.warning(
                     "Normalization error for %s/%s via %s: %s",
@@ -640,7 +449,6 @@ def _get_quote_with_fallback(
                 }
                 continue
 
-            # --- Freshness ---
             fresh: Optional[bool] = None
             stale_reason: Optional[str] = None
             if freshness_minutes is not None:
@@ -656,6 +464,18 @@ def _get_quote_with_fallback(
                 "fresh": fresh,
                 "stale_reason": stale_reason,
             }
+
+            vt_meta = normalized.attrs.get("vt_meta")
+            if vt_meta:
+                meta["latest_bar_date"] = vt_meta.get("latest_bar_date")
+                meta["volume_unit"] = vt_meta.get("volume_unit")
+                meta["served_by"] = vt_meta.get("served_by")
+                meta["fallback_used"] = vt_meta.get("fallback_used")
+                note = _federation_note(
+                    vt_meta.get("latest_bar_date"), freshness_now,
+                )
+                if note:
+                    meta["note"] = note
 
             # Embed freshness in DataFrame for backward-compatible access
             if fresh is not None:
@@ -700,22 +520,24 @@ def get_quote(
 ) -> Optional[pd.DataFrame]:
     """Fetch a normalized quote for the given symbol and market.
 
-    **Backward-compatible**: when called with only *symbol*, *market*, and
-    optionally *providers*, behaves exactly like the Task 5 implementation.
+    All quotes come from the Vibe-Trading market-data federation
+    (``src.market_data.fetch_market_data``, ``source="auto"``); the latest
+    bar of a short recent window becomes the quote.
 
     Args:
-        symbol: Stock/ETF code (e.g., ``"000001"``, ``"588000"``, ``"0700.HK"``).
-        market: Market identifier — ``"A"``, ``"ETF"``, or ``"HK"``
+        symbol: Stock/ETF code (e.g., ``"000001.SZ"``, ``"588000"``,
+                ``"0700.HK"``, ``"AAPL"``).
+        market: Market identifier — ``"A"``, ``"ETF"``, ``"HK"``, or ``"US"``
                 (case-insensitive).
         providers: Optional dict of ``{market: callable}`` for dependency
-                   injection (backward-compatible single-provider path).
+                   injection (single-provider path; injected providers must
+                   return English column names).
         fallback_chain: Optional ordered list of
                         ``(name, callable, source_label)`` tuples.
-                        When provided, overrides the single-provider path
-                        and enables retry + freshness.
-        max_retries: Max retry attempts per provider (default 3).
+        max_retries: Max retry attempts per provider (default 2: initial
+                     attempt + one retry).
         freshness_minutes: If set, validates quote age and embeds
-                          ``_quote_fresh`` / ``_quote_stale_reason`` columns.
+                           ``_quote_fresh`` / ``_quote_stale_reason`` columns.
         freshness_now: Override reference time for freshness check (for tests).
 
     Returns:
@@ -724,7 +546,6 @@ def get_quote(
     """
     market_upper = market.upper()
 
-    # --- Fallback chain path ---
     if fallback_chain is not None:
         if not fallback_chain:
             return None
@@ -734,7 +555,6 @@ def get_quote(
         )
         return result
 
-    # --- Backward-compatible single-provider path ---
     active_providers = providers if providers is not None else _DEFAULT_PROVIDERS
 
     if market_upper not in active_providers:
@@ -755,18 +575,7 @@ def get_quote(
         return None
 
     try:
-        if market_upper == "A":
-            return _normalize_akshare_row(
-                raw_df, _A_SHARE_COL_MAP, symbol, market_upper, source,
-            )
-        elif market_upper == "ETF":
-            return _normalize_akshare_row(
-                raw_df, _ETF_COL_MAP, symbol, market_upper, source,
-            )
-        elif market_upper == "HK":
-            return _normalize_hk_row(raw_df, symbol, market_upper, source)
-        else:
-            return None
+        return _normalize_generic_row(raw_df, symbol, market_upper, source)
     except Exception as e:
         logger.warning("Normalization error for %s/%s: %s", market, symbol, e)
         return None
@@ -787,8 +596,8 @@ def get_quote_with_meta(
         symbol: Stock/ETF code.
         market: Market identifier (case-insensitive).
         fallback_chain: Ordered list of ``(name, callable, source_label)``.
-        providers: Backward-compatible single-provider dict.
-        max_retries: Max retries per provider (default 3).
+        providers: Single-provider dict for dependency injection.
+        max_retries: Max retries per provider (default 2).
         freshness_minutes: Freshness threshold in minutes.
         freshness_now: Override reference time for freshness check (for tests).
 
@@ -796,12 +605,18 @@ def get_quote_with_meta(
         ``(quote_df_or_None, meta_dict)`` where *meta_dict* contains::
 
             {
-                "provider": str | None,     # name of successful provider
+                "provider": str | None,     # "vibe-trading federation" on success
                 "source": str | None,       # source label
                 "attempts": int,            # total attempts across chain
                 "errors": dict | None,      # per-provider error metadata
                 "fresh": bool | None,       # freshness result
                 "stale_reason": str | None, # why stale (if applicable)
+                # federation-provided fields (when available):
+                "latest_bar_date": str | None,
+                "volume_unit": str | None,
+                "served_by": str | None,
+                "fallback_used": bool,
+                "note": str | None,         # honest T-N / same-day statement
             }
     """
     market_upper = market.upper()
@@ -817,7 +632,6 @@ def get_quote_with_meta(
             freshness_minutes, freshness_now,
         )
 
-    # Backward-compatible: wrap single provider as a one-entry chain
     active_providers = providers if providers is not None else _DEFAULT_PROVIDERS
 
     if market_upper not in active_providers:
@@ -836,101 +650,3 @@ def get_quote_with_meta(
         symbol, market_upper, chain, max_retries,
         freshness_minutes, freshness_now,
     )
-
-
-# ---------------------------------------------------------------------------
-# Intraday adjustment — reuses logic from scripts/backtest/intraday_adjust.py
-# ---------------------------------------------------------------------------
-
-_TIME_RE = re.compile(r"^(\d{1,2}):(\d{2})(?::(\d{2}))?$")
-
-_MORNING_START = 9 * 60 + 30   # 9:30 = 570
-_MORNING_END = 11 * 60 + 30    # 11:30 = 690
-_AFTERNOON_START = 13 * 60     # 13:00 = 780
-_AFTERNOON_END = 15 * 60       # 15:00 = 900
-_TOTAL_TRADING_MIN = 240
-
-
-def _validate_time_format(time_str: str) -> bool:
-    match = _TIME_RE.match(time_str.strip())
-    if not match:
-        return False
-    hour, minute = int(match.group(1)), int(match.group(2))
-    return 0 <= hour <= 23 and 0 <= minute <= 59
-
-
-def adjust_intraday_data(
-    quote_df: pd.DataFrame,
-    current_time: Optional[str] = None,
-) -> Union[pd.DataFrame, dict]:
-    """Adjust intraday volume/amount by extrapolating to full-day estimates.
-
-    Uses A-share trading hours (9:30-11:30, 13:00-15:00, total 240 min).
-    Returns DataFrame with ``adjusted``/``original_timestamp``/``adjustment_ratio``
-    attrs, or error dict with ``adjusted=False`` for malformed timestamps.
-    """
-    if current_time is None:
-        now = datetime.now()
-        current_time = now.strftime("%H:%M")
-
-    if not isinstance(current_time, str) or not _validate_time_format(current_time):
-        return {
-            "adjusted": False,
-            "error": f"Invalid timestamp format: {current_time!r}",
-            "error_type": "invalid_timestamp",
-            "original_timestamp": (
-                quote_df.iloc[0]["timestamp"]
-                if not quote_df.empty and "timestamp" in quote_df.columns
-                else None
-            ),
-        }
-
-    parts = current_time.strip().split(":")
-    hour, minute = int(parts[0]), int(parts[1])
-    total_min = hour * 60 + minute
-
-    result = quote_df.copy()
-    original_ts = (
-        result.iloc[0]["timestamp"]
-        if "timestamp" in result.columns
-        else None
-    )
-
-    if total_min >= _AFTERNOON_END:
-        result.attrs["adjusted"] = False
-        result.attrs["original_timestamp"] = original_ts
-        result.attrs["adjustment_ratio"] = 1.0
-        return result
-
-    if total_min < _MORNING_START:
-        result.attrs["adjusted"] = False
-        result.attrs["original_timestamp"] = original_ts
-        result.attrs["adjustment_ratio"] = 0.0
-        return result
-
-    if total_min <= _MORNING_END:
-        elapsed = total_min - _MORNING_START
-    elif total_min <= _AFTERNOON_START:
-        elapsed = 120
-    else:
-        elapsed = 120 + (total_min - _AFTERNOON_START)
-
-    ratio = elapsed / _TOTAL_TRADING_MIN
-
-    if ratio >= 0.95:
-        result.attrs["adjusted"] = False
-        result.attrs["original_timestamp"] = original_ts
-        result.attrs["adjustment_ratio"] = ratio
-        return result
-
-    for col in ["volume", "amount"]:
-        if col in result.columns:
-            result[col] = result[col].astype(float)
-            result.iloc[0, result.columns.get_loc(col)] = (
-                result.iloc[0][col] / ratio
-            )
-
-    result.attrs["adjusted"] = True
-    result.attrs["original_timestamp"] = original_ts
-    result.attrs["adjustment_ratio"] = ratio
-    return result

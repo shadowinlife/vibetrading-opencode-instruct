@@ -41,7 +41,7 @@ def equal_weight_z(
 
 
 # ---------------------------------------------------------------------------
-# Linear regression primitives (mirror scripts/alpha158/core.py)
+# Linear regression primitives
 # ---------------------------------------------------------------------------
 
 def _slope(y: np.ndarray) -> float:

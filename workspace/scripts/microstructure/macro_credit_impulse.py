@@ -2,8 +2,13 @@
 Macro credit impulse signal module for escape-top microstructure framework.
 
 Uses Tushare ``cn_m`` (M2 money supply) and ``sf_month`` (social financing)
-to detect tightening macro liquidity conditions that historically preceded
-market drawdowns.
+— fetched live from the Tushare API (see ``source_registry`` /
+``external_probes`` for the endpoint catalog) — to detect tightening macro
+liquidity conditions that historically preceded market drawdowns.  The
+market-elevation overlay (SSE Composite close vs 250-day MA) is read from
+the Vibe-Trading ClickHouse warehouse (``idx_factor_pro``) via the
+connector configured exclusively through ``CLICKHOUSE_*`` environment
+variables.
 
 **Critical date handling**: Monthly macro data is released ~10-15 days after
 month-end (PBOC schedule).  This module:
@@ -43,6 +48,9 @@ import numpy as np
 import pandas as pd
 import tushare as ts
 
+from .base import ClickHouseConnector, get_connection, query_dataframe
+from .metadata import SSE_INDEX_CODE
+
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 RELEASE_LAG_CALENDAR_DAYS: int = 15
@@ -54,8 +62,6 @@ SSE_MA_WINDOW: int = 250
 
 M2_DECLINE_CONSECUTIVE: int = 2
 """Number of consecutive months M2 YoY must decline to trigger tightening."""
-
-DEFAULT_DB_PATH: str = "./duckdb/ashare.duckdb"
 
 # ── Token loading ─────────────────────────────────────────────────────────────
 
@@ -311,7 +317,7 @@ def compute_macro_credit_impulse_signal(
     start_month: str = "201501",
     end_month: str | None = None,
     token: str | None = None,
-    duckdb_path: str = DEFAULT_DB_PATH,
+    conn: ClickHouseConnector | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Compute macro credit impulse signal from cn_m and sf_month data.
 
@@ -323,6 +329,19 @@ def compute_macro_credit_impulse_signal(
        AND
     2. The SSE Composite close is above its 250-day moving average (market
        is "elevated")
+
+    Parameters
+    ----------
+    start_month : str
+        First month to fetch (``YYYYMM``).
+    end_month : str or None
+        Last month to fetch (``YYYYMM``); defaults to the current month.
+    token : str or None
+        Tushare token; loaded from the environment when omitted.
+    conn : ClickHouseConnector or None
+        Vibe-Trading ClickHouse connector used for the SSE index overlay.
+        When ``None`` (default) a connector is created from ``CLICKHOUSE_*``
+        environment config.
 
     Returns
     -------
@@ -338,6 +357,9 @@ def compute_macro_credit_impulse_signal(
 
     if token is None:
         token = _load_tushare_token()
+
+    if conn is None:
+        conn = get_connection()
 
     # ── Step 1: Fetch monthly macro data ──────────────────────────────────
     try:
@@ -407,7 +429,7 @@ def compute_macro_credit_impulse_signal(
 
 # ── Step 7: Fetch SSE close for market-elevation check ────────────────
     try:
-        df_sse = _fetch_sse_close(duckdb_path)
+        df_sse = _fetch_sse_close(conn)
         if not df_sse.empty:
             df_sse["trade_date_dt"] = pd.to_datetime(df_sse["trade_date"]).astype("datetime64[ns]")
             df_sse = df_sse.sort_values("trade_date_dt")
@@ -447,23 +469,19 @@ def compute_macro_credit_impulse_signal(
     return df_cn_m, df_sf, df_merged
 
 
-def _fetch_sse_close(duckdb_path: str) -> pd.DataFrame:
-    """Fetch SSE Composite close prices from local DuckDB.
+def _fetch_sse_close(conn: ClickHouseConnector) -> pd.DataFrame:
+    """Fetch SSE Composite close prices from the ClickHouse ashare warehouse.
 
-    Returns empty DataFrame on failure.
+    Returns empty DataFrame on failure so the signal degrades to
+    ``market_elevated = False`` instead of raising.
     """
     try:
-        import duckdb
-        con = duckdb.connect(duckdb_path, read_only=True)
-        df = con.execute("""
-            SELECT trade_date, close AS sse_close
-            FROM idx_factor_pro
-            WHERE ts_code = '000001.SH'
-            ORDER BY trade_date
-        """).fetchdf()
-        con.close()
-        return df
-    except Exception:
+        return query_dataframe(
+            conn,
+            "SELECT trade_date, close AS sse_close FROM idx_factor_pro "
+            f"WHERE ts_code = '{SSE_INDEX_CODE}' ORDER BY trade_date",
+        )
+    except Exception:  # noqa: BLE001 - overlay is optional by design
         return pd.DataFrame()
 
 
@@ -474,7 +492,7 @@ def compute_signal_dataframe(
     start_month: str = "201501",
     end_month: str | None = None,
     token: str | None = None,
-    duckdb_path: str = DEFAULT_DB_PATH,
+    conn: ClickHouseConnector | None = None,
 ) -> pd.DataFrame:
     """Compute macro credit impulse signal and return only the signal DataFrame.
 
@@ -484,6 +502,6 @@ def compute_signal_dataframe(
         start_month=start_month,
         end_month=end_month,
         token=token,
-        duckdb_path=duckdb_path,
+        conn=conn,
     )
     return df_signal

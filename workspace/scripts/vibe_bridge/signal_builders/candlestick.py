@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from scripts.backtest.signal_builders._common import (
+from scripts.vibe_bridge.signal_builders._common import (
     EPS,
     compute_kbar_features,
 )

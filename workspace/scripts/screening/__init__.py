@@ -1,4 +1,8 @@
-"""Stock screening module — DuckDB-based multi-layer filtering.
+"""Stock screening module — ClickHouse-based multi-layer filtering.
+
+Data layer: all screening queries run against the Vibe-Trading ClickHouse
+warehouse through ``src.clickhouse_connector.ClickHouseConnector``
+(env-configured ``CLICKHOUSE_*`` connection, no hardcoded credentials).
 
 Provides parameterized SQL templates and screening functions for:
 - Layer 1: Fundamental screening (ROE, revenue growth, cash flow, valuation)

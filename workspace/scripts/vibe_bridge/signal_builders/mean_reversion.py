@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from scripts.backtest.signal_builders._common import (
+from scripts.vibe_bridge.signal_builders._common import (
     equal_weight_z,
     compute_resi,
     compute_rsv,

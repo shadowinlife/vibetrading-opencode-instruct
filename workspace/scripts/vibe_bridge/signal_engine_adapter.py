@@ -22,7 +22,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from scripts.backtest.signal_builders import SIGNAL_REGISTRY, get_signal_builder
+from scripts.vibe_bridge.signal_builders import SIGNAL_REGISTRY, get_signal_builder
 
 
 # ---------------------------------------------------------------------------

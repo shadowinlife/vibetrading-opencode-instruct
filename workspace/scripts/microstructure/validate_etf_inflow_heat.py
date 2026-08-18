@@ -1,22 +1,34 @@
-"""Run generic validation on ETF inflow heat signal."""
+"""Run generic validation on ETF inflow heat signal.
+
+Market data is read through the Vibe-Trading ClickHouse connector
+(``CLICKHOUSE_*`` environment config, ashare warehouse).
+"""
 import json
 from pathlib import Path
 
-import duckdb
 import pandas as pd
 
 from scripts.microstructure.etf_inflow_heat import load_etf_signal_series
 from scripts.microstructure.generic_validator import validate_condition
-from scripts.microstructure.base import write_json
+from scripts.microstructure.base import (
+    connection_available,
+    get_connection,
+    query_dataframe,
+    unavailable_payload,
+    write_json,
+)
+from scripts.microstructure.metadata import SSE_INDEX_CODE
 
-DUCKDB_PATH = "./duckdb/ashare.duckdb"
+if not connection_available():
+    print(json.dumps(unavailable_payload(), ensure_ascii=False))
+    raise SystemExit(0)
+
 OUT_DIR = Path("tmp/microstructure/validation/etf_inflow_heat")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # ── Load ETF signal series ─────────────────────────────────────────
 print("Loading ETF signal series...")
 df_signal = load_etf_signal_series(
-    DUCKDB_PATH,
     percentile_threshold=95.0,
     rolling_window=252,
     concentration_threshold=0.50,
@@ -27,14 +39,11 @@ print(f"  {len(df_signal)} trading days, {int(df_signal['signal'].sum())} signal
 
 # ── Load SSE index close ───────────────────────────────────────────
 print("Loading SSE index close...")
-con = duckdb.connect(DUCKDB_PATH, read_only=True)
-df_sse = con.execute("""
-    SELECT trade_date, close
-    FROM idx_factor_pro
-    WHERE ts_code = '000001.SH'
-    ORDER BY trade_date
-""").fetchdf()
-con.close()
+df_sse = query_dataframe(
+    get_connection(),
+    "SELECT trade_date, close FROM idx_factor_pro "
+    f"WHERE ts_code = '{SSE_INDEX_CODE}' ORDER BY trade_date",
+)
 df_sse["trade_date"] = pd.to_datetime(df_sse["trade_date"])
 print(f"  SSE coverage: {df_sse['trade_date'].iloc[0].strftime('%Y-%m-%d')} to {df_sse['trade_date'].iloc[-1].strftime('%Y-%m-%d')}")
 print(f"  {len(df_sse)} trading days")
@@ -46,7 +55,7 @@ report = validate_condition(
     df_sse,
     {
         "condition_id": "etf_inflow_heat",
-        "source_id": "local:duckdb:fund_daily+stk_factor_pro",
+        "source_id": "clickhouse:ashare:fund_daily+stk_factor_pro",
         "condition_name": "ETF Inflow Heat",
         "description": (
             "ETF turnover ratio vs total market turnover in rolling percentile; "
@@ -120,7 +129,7 @@ md_lines.append("# ETF Inflow Heat — Validation Report")
 md_lines.append("")
 md_lines.append(f"**Generated**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 md_lines.append(f"**Classification**: `{report.classification.value}`")
-md_lines.append(f"**Source**: `local:duckdb:fund_daily + stk_factor_pro + idx_factor_pro`")
+md_lines.append(f"**Source**: `clickhouse:ashare:fund_daily + stk_factor_pro + idx_factor_pro`")
 md_lines.append("")
 
 md_lines.append("## Hypothesis")

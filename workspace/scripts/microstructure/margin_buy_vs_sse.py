@@ -1,7 +1,7 @@
 """
 Margin-buy ratio vs SSE close divergence indicator — pure computation.
 
-Core function ``compute_margin_buy_vs_sse(duckdb_path)`` aggregates
+Core function ``compute_margin_buy_vs_sse(conn)`` aggregates
 ``stk_margin``, ``stk_factor_pro``, and ``idx_factor_pro`` (SSE close)
 into a structured JSON-serialisable dict capturing:
 
@@ -20,8 +20,9 @@ from __future__ import annotations
 
 from typing import Any
 
-import duckdb
 import pandas as pd
+
+from .base import ClickHouseConnector, get_connection, query_dataframe, validate_trade_date
 
 
 def fmt_date(value: object) -> str:
@@ -33,7 +34,7 @@ def fmt_date(value: object) -> str:
 # core computation
 # ------------------------------------------------------------------ #
 def compute_margin_buy_vs_sse(
-    duckdb_path: str,
+    conn: ClickHouseConnector | None = None,
     start_date: str | None = None,
     end_date: str | None = None,
     divergence_lookback_days: int = 20,
@@ -42,8 +43,9 @@ def compute_margin_buy_vs_sse(
 
     Parameters
     ----------
-    duckdb_path : str
-        Path to the DuckDB database (e.g. ``./duckdb/ashare.duckdb``).
+    conn : ClickHouseConnector or None
+        Vibe-Trading ClickHouse connector.  When ``None`` (default) a
+        connector is created from ``CLICKHOUSE_*`` environment config.
     start_date : str or None
         Optional lower-bound filter on ``trade_date`` (YYYY-MM-DD).
     end_date : str or None
@@ -58,19 +60,16 @@ def compute_margin_buy_vs_sse(
         Structured summary with keys documented in the module docstring.
     """
     date_filter = ""
-    params: list[str] = []
     if start_date is not None:
-        date_filter += "  AND m.trade_date >= ?\n"
-        params.append(start_date)
+        date_filter += f"  AND m.trade_date >= '{validate_trade_date(start_date, name='start_date')}'\n"
     if end_date is not None:
-        date_filter += "  AND m.trade_date <= ?\n"
-        params.append(end_date)
+        date_filter += f"  AND m.trade_date <= '{validate_trade_date(end_date, name='end_date')}'\n"
 
     # ------------------------------------------------------------------ #
     # SQL: join stk_margin (aggregated), stk_factor_pro (aggregated),
     #      idx_factor_pro (SSE close only)
     # ------------------------------------------------------------------ #
-    query = rf"""
+    query = f"""
     WITH turnover AS (
         SELECT trade_date, SUM(amount) AS total_amount_kcy
         FROM stk_factor_pro
@@ -101,13 +100,13 @@ def compute_margin_buy_vs_sse(
     ORDER BY m.trade_date
     """
 
-    con = duckdb.connect(duckdb_path, read_only=True)
-    df = con.execute(query, params).fetchdf()
-    con.close()
+    if conn is None:
+        conn = get_connection()
+    df = query_dataframe(conn, query)
 
     if df.empty:
         raise ValueError(
-            "No data returned. Verify the DuckDB path and that "
+            "No data returned. Verify ClickHouse connectivity and that "
             "stk_margin / stk_factor_pro / idx_factor_pro tables have data "
             "in the requested date range."
         )

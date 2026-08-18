@@ -22,11 +22,19 @@ from __future__ import annotations
 from datetime import date
 from typing import Any, Literal
 
-import duckdb
+import json
+
 import pandas as pd
 
-from .base import format_date, get_connection, write_json
-from .metadata import DEFAULT_DUCKDB_PATH
+from .base import (
+    ClickHouseConnector,
+    connection_available,
+    format_date,
+    get_connection,
+    query_dataframe,
+    unavailable_payload,
+    write_json,
+)
 
 # ── Type aliases ──────────────────────────────────────────────────────────────
 
@@ -178,7 +186,7 @@ def _build_query(
     start_date: str | None = None,
     end_date: str | None = None,
 ) -> str:
-    """Build the parameterised DuckDB query for sector turnover crowding."""
+    """Build the parameterised ClickHouse query for sector turnover crowding."""
     code_col = f"{sector_level.lower()}_code"
     name_col = f"{sector_level.lower()}_name"
 
@@ -335,7 +343,7 @@ def _build_summary(
 
 
 def compute_sector_crowding(
-    con_or_path: duckdb.DuckDBPyConnection | str = DEFAULT_DUCKDB_PATH,
+    conn: ClickHouseConnector | None = None,
     *,
     sector_level: str = "L1",
     start_date: str | date | None = None,
@@ -345,8 +353,9 @@ def compute_sector_crowding(
 
     Parameters
     ----------
-    con_or_path : duckdb.DuckDBPyConnection or str
-        An open DuckDB connection *or* a path to a ``.duckdb`` file.
+    conn : ClickHouseConnector or None
+        Vibe-Trading ClickHouse connector.  When ``None`` (default) a
+        connector is created from ``CLICKHOUSE_*`` environment config.
     sector_level : str
         Sector granularity: ``"L1"`` (broad, 31 sectors), ``"L2"`` (medium,
         129 sectors), or ``"L3"`` (fine-grain, 314 sectors).
@@ -379,18 +388,11 @@ def compute_sector_crowding(
     level = _validate_level(sector_level)
     start_str, end_str = _validate_date_window(start_date, end_date)
 
-    own_connection = isinstance(con_or_path, str)
-    if own_connection:
-        con = get_connection(con_or_path, read_only=True)
-    else:
-        con = con_or_path
+    if conn is None:
+        conn = get_connection()
 
-    try:
-        query = _build_query(level, start_date=start_str, end_date=end_str)
-        df = con.execute(query).fetchdf()
-    finally:
-        if own_connection:
-            con.close()
+    query = _build_query(level, start_date=start_str, end_date=end_str)
+    df = query_dataframe(conn, query)
 
     if df.empty:
         raise ValueError(
@@ -403,7 +405,7 @@ def compute_sector_crowding(
 
 
 def compute_all_levels(
-    con_or_path: duckdb.DuckDBPyConnection | str = DEFAULT_DUCKDB_PATH,
+    conn: ClickHouseConnector | None = None,
     *,
     start_date: str | date | None = None,
     end_date: str | date | None = None,
@@ -412,24 +414,17 @@ def compute_all_levels(
 
     Returns a dict mapping level name to its ``SectorCrowdingSummary``.
     """
-    own_connection = isinstance(con_or_path, str)
-    if own_connection:
-        con = get_connection(con_or_path, read_only=True)
-    else:
-        con = con_or_path
+    if conn is None:
+        conn = get_connection()
 
     results: dict[str, SectorCrowdingSummary] = {}
-    try:
-        for level in _VALID_LEVELS:
-            results[level] = compute_sector_crowding(
-                con,
-                sector_level=level,
-                start_date=start_date,
-                end_date=end_date,
-            )
-    finally:
-        if own_connection:
-            con.close()
+    for level in _VALID_LEVELS:
+        results[level] = compute_sector_crowding(
+            conn,
+            sector_level=level,
+            start_date=start_date,
+            end_date=end_date,
+        )
 
     return results
 
@@ -440,9 +435,9 @@ def compute_all_levels(
 def _main() -> None:
     """Simple CLI for quick inspection."""
     import argparse
+    import sys
 
     parser = argparse.ArgumentParser(description="Sector turnover crowding")
-    parser.add_argument("--duckdb-path", default=DEFAULT_DUCKDB_PATH)
     parser.add_argument("--level", choices=["L1", "L2", "L3"], default="L1")
     parser.add_argument("--all-levels", action="store_true",
                         help="Compute for L1, L2, and L3")
@@ -451,9 +446,13 @@ def _main() -> None:
     parser.add_argument("--end-date", default=None)
     args = parser.parse_args()
 
+    if not connection_available():
+        print(json.dumps(unavailable_payload(), ensure_ascii=False))
+        sys.exit(0)
+
     if args.all_levels:
         results = compute_all_levels(
-            args.duckdb_path, start_date=args.start_date, end_date=args.end_date,
+            start_date=args.start_date, end_date=args.end_date,
         )
         if args.output:
             write_json(results, args.output)
@@ -467,7 +466,7 @@ def _main() -> None:
                   f"of turnover")
     else:
         result = compute_sector_crowding(
-            args.duckdb_path, sector_level=args.level,
+            sector_level=args.level,
             start_date=args.start_date, end_date=args.end_date,
         )
         if args.output:

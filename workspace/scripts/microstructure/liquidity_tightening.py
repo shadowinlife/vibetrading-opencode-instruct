@@ -39,7 +39,7 @@ import numpy as np
 import pandas as pd
 
 from .base import format_date, get_connection, pct_rank, write_json
-from .metadata import DEFAULT_DUCKDB_PATH, SSE_INDEX_CODE
+from .metadata import SSE_INDEX_CODE
 
 # ---------------------------------------------------------------------------
 # Constants

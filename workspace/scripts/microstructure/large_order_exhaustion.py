@@ -48,12 +48,12 @@ from __future__ import annotations
 from datetime import date
 from typing import Any, Literal
 
-import duckdb
+
 import numpy as np
 import pandas as pd
 
-from .base import format_date, get_connection
-from .metadata import DEFAULT_DUCKDB_PATH, SSE_INDEX_CODE
+from .base import ClickHouseConnector, format_date, get_connection, query_dataframe
+from .metadata import SSE_INDEX_CODE
 
 # ---------------------------------------------------------------------------
 # Public types
@@ -320,7 +320,7 @@ def _compute_signal_variants(
 
 
 def compute_large_order_exhaustion(
-    con_or_path: duckdb.DuckDBPyConnection | str = DEFAULT_DUCKDB_PATH,
+    conn: ClickHouseConnector | None = None,
     *,
     data_source: DataSource = "tushare",
     start_date: str | date | None = None,
@@ -338,10 +338,9 @@ def compute_large_order_exhaustion(
 
     Parameters
     ----------
-    con_or_path : duckdb.DuckDBPyConnection or str
-        Open DuckDB connection or path to ``.duckdb`` file.
-        When a string is given, a read‑only connection is opened and
-        automatically closed.
+    conn : ClickHouseConnector or None
+        Vibe-Trading ClickHouse connector.  When ``None`` (default) a
+        connector is created from ``CLICKHOUSE_*`` environment config.
     data_source : str, default ``"tushare"``
         Moneyflow source: ``"tushare"`` (stk_moneyflow) or
         ``"ths"`` (stk_moneyflow_ths).
@@ -371,29 +370,22 @@ def compute_large_order_exhaustion(
     start_str = format_date(start_date) if start_date is not None else None
     end_str = format_date(end_date) if end_date is not None else None
 
-    own_connection = isinstance(con_or_path, str)
-    if own_connection:
-        con = get_connection(con_or_path, read_only=True)
+    if conn is None:
+        conn = get_connection()
+
+    if data_source == "tushare":
+        query = _build_query_tushare(start_date=start_str, end_date=end_str)
+        source_cols = ["total_buy_lg_wan", "total_sell_lg_wan",
+                       "total_buy_elg_wan", "total_sell_elg_wan"]
+        source_desc = "stk_moneyflow (Tushare, 万元)"
+        source_unit = "万元 (ten-thousand CNY)"
     else:
-        con = con_or_path
+        query = _build_query_ths(start_date=start_str, end_date=end_str)
+        source_cols = ["total_net_wan", "total_net_d5_wan"]
+        source_desc = "stk_moneyflow_ths (同花顺, 万元)"
+        source_unit = "万元 (ten-thousand CNY)"
 
-    try:
-        if data_source == "tushare":
-            query = _build_query_tushare(start_date=start_str, end_date=end_str)
-            source_cols = ["total_buy_lg_wan", "total_sell_lg_wan",
-                           "total_buy_elg_wan", "total_sell_elg_wan"]
-            source_desc = "stk_moneyflow (Tushare, 万元)"
-            source_unit = "万元 (ten-thousand CNY)"
-        else:
-            query = _build_query_ths(start_date=start_str, end_date=end_str)
-            source_cols = ["total_net_wan", "total_net_d5_wan"]
-            source_desc = "stk_moneyflow_ths (同花顺, 万元)"
-            source_unit = "万元 (ten-thousand CNY)"
-
-        df = con.execute(query).fetchdf()
-    finally:
-        if own_connection:
-            con.close()
+    df = query_dataframe(conn, query)
 
     if df.empty:
         raise ValueError(
@@ -567,7 +559,7 @@ def compute_large_order_exhaustion(
 
 
 def compute_exhaustion_signal_series(
-    duckdb_path: str = DEFAULT_DUCKDB_PATH,
+    conn: ClickHouseConnector | None = None,
     *,
     data_source: DataSource = "tushare",
     sse_high_pct: float = 90.0,
@@ -584,8 +576,9 @@ def compute_exhaustion_signal_series(
 
     Parameters
     ----------
-    duckdb_path : str
-        Path to DuckDB.  Ignored when ``df_agg`` is supplied.
+    conn : ClickHouseConnector or None
+        Vibe-Trading ClickHouse connector.  Ignored when ``df_agg`` is
+        supplied.
     data_source : str
         ``"tushare"`` or ``"ths"``.
     sse_high_pct : float
@@ -606,7 +599,7 @@ def compute_exhaustion_signal_series(
     """
     if df_agg is None:
         result = compute_large_order_exhaustion(
-            duckdb_path,
+            conn,
             data_source=data_source,
             sse_high_pct=sse_high_pct,
             ratio_ma_window=ratio_ma_window,

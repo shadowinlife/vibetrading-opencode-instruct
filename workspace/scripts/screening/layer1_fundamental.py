@@ -1,4 +1,8 @@
-"""Layer 1: Fundamental screening via DuckDB.
+"""Layer 1: Fundamental screening via ClickHouse.
+
+Data layer: queries run against the Vibe-Trading ClickHouse warehouse
+through ``scripts.screening.ch_client`` (env-configured ``CLICKHOUSE_*``
+connection, no hardcoded credentials).
 
 Usage:
     from scripts.screening.layer1_fundamental import screen_fundamental
@@ -7,13 +11,10 @@ Usage:
 """
 from __future__ import annotations
 
-import duckdb
 import pandas as pd
-from pathlib import Path
 
+from scripts.screening.ch_client import run_query
 from scripts.screening.sql_templates import LAYER1_FUNDAMENTAL_SQL, DEFAULT_PARAMS
-
-DB_PATH = Path(__file__).resolve().parents[2] / "duckdb" / "ashare.duckdb"
 
 
 def screen_fundamental(
@@ -25,7 +26,7 @@ def screen_fundamental(
     ocfps_min: float | None = None,
     mv_min: float | None = None,
 ) -> pd.DataFrame:
-    """Run Layer 1 fundamental screening against local DuckDB.
+    """Run Layer 1 fundamental screening against the ClickHouse warehouse.
 
     Args:
         trade_date: Trading date for price/valuation data (YYYY-MM-DD).
@@ -58,14 +59,7 @@ def screen_fundamental(
         params["mv_min"] = mv_min
 
     sql = LAYER1_FUNDAMENTAL_SQL.format(**params)
-
-    db = duckdb.connect(str(DB_PATH), read_only=True)
-    try:
-        df = db.execute(sql).fetchdf()
-    finally:
-        db.close()
-
-    return df
+    return run_query(sql)
 
 
 def screen_fundamental_summary(df: pd.DataFrame) -> dict:

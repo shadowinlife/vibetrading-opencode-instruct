@@ -3,50 +3,60 @@ Validation script for macro_credit_impulse signal module.
 
 Fetches real Tushare data, computes signal, validates against SSE forward
 drawdowns, and writes report.json + report.md.
+
+Market data (SSE close) is read through the Vibe-Trading ClickHouse
+connector (``CLICKHOUSE_*`` environment config); macro series come from
+the Tushare API (``TUSHARE_TOKEN``).
 """
 
 from __future__ import annotations
 
 import json
-import os
 from datetime import date
 from pathlib import Path
 
-import duckdb
 import pandas as pd
 
+from scripts.microstructure.base import (
+    connection_available,
+    get_connection,
+    query_dataframe,
+    unavailable_payload,
+)
 from scripts.microstructure.generic_validator import validate_condition
 from scripts.microstructure.macro_credit_impulse import (
     compute_macro_credit_impulse_signal,
 )
+from scripts.microstructure.metadata import SSE_INDEX_CODE
 
 OUTPUT_DIR = Path("tmp/microstructure/validation/macro_credit_impulse")
-DEFAULT_DB_PATH = "./duckdb/ashare.duckdb"
 
 
-def fetch_sse_data(duckdb_path: str) -> pd.DataFrame:
-    """Fetch SSE Composite close from local DuckDB."""
-    con = duckdb.connect(duckdb_path, read_only=True)
-    df = con.execute("""
-        SELECT trade_date, close
-        FROM idx_factor_pro
-        WHERE ts_code = '000001.SH'
-          AND trade_date >= '2015-01-01'
-        ORDER BY trade_date
-    """).fetchdf()
-    con.close()
+def fetch_sse_data(conn=None) -> pd.DataFrame:
+    """Fetch SSE Composite close from the ClickHouse ashare warehouse."""
+    if conn is None:
+        conn = get_connection()
+    df = query_dataframe(
+        conn,
+        "SELECT trade_date, close FROM idx_factor_pro "
+        f"WHERE ts_code = '{SSE_INDEX_CODE}' AND trade_date >= '2015-01-01' "
+        "ORDER BY trade_date",
+    )
     df["trade_date"] = pd.to_datetime(df["trade_date"])
     return df
 
 
 def main() -> None:
+    if not connection_available():
+        print(json.dumps(unavailable_payload(), ensure_ascii=False))
+        return
+
     today_str = date.today().isoformat()
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     print("Fetching Tushare cn_m + sf_month data (201501 to now)...")
     df_cn_m, df_sf, df_signal = compute_macro_credit_impulse_signal(
         start_month="201501",
-        duckdb_path=DEFAULT_DB_PATH,
     )
 
     print(f"  cn_m: {len(df_cn_m)} monthly rows")
@@ -56,8 +66,8 @@ def main() -> None:
           f"{df_signal['signal'].sum()} signal days")
 
     # ── Fetch SSE for validation ──
-    print("Fetching SSE close from DuckDB...")
-    df_sse = fetch_sse_data(DEFAULT_DB_PATH)
+    print("Fetching SSE close from ClickHouse (idx_factor_pro)...")
+    df_sse = fetch_sse_data()
     print(f"  SSE: {len(df_sse)} trading days, "
           f"{df_sse['trade_date'].min().date()} → {df_sse['trade_date'].max().date()}")
 
@@ -209,7 +219,7 @@ def _generate_md_report(report_dict: dict, report) -> str:
         "",
         "- **cn_m**: Tushare `pro.cn_m()` — M0/M1/M2 absolute values + YoY/MoM changes",
         "- **sf_month**: Tushare `pro.query('sf_month')` — monthly social financing increment",
-        "- **SSE close**: Local DuckDB `idx_factor_pro` (000001.SH)",
+        "- **SSE close**: ClickHouse ashare `idx_factor_pro` (000001.SH)",
         "",
         "## 5. No-Lookahead Verification",
         "",

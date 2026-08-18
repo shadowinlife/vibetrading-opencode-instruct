@@ -1,8 +1,9 @@
 """Validation runner for large_order_exhaustion condition.
 
-Runs compute_large_order_exhaustion against actual DuckDB data with both
+Runs compute_large_order_exhaustion against actual ClickHouse data with both
 Tushare (stk_moneyflow) and THS (stk_moneyflow_ths) data sources, and
-produces report.json + report.md.
+produces report.json + report.md. Market data is read through the Vibe-Trading
+ClickHouse connector (``CLICKHOUSE_*`` environment config, ashare warehouse).
 """
 
 from __future__ import annotations
@@ -14,12 +15,19 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from scripts.microstructure.base import write_json
+from scripts.microstructure.base import (
+    connection_available,
+    unavailable_payload,
+    write_json,
+)
 from scripts.microstructure.large_order_exhaustion import (
     LargeOrderSummary,
     compute_large_order_exhaustion,
 )
-from scripts.microstructure.metadata import DEFAULT_DUCKDB_PATH
+
+if not connection_available():
+    print(json.dumps(unavailable_payload(), ensure_ascii=False))
+    raise SystemExit(0)
 
 REPORT_DIR = (
     Path(__file__).resolve().parents[2] / "tmp" / "microstructure"
@@ -30,7 +38,6 @@ REPORT_DIR = (
 def _run_source(source: str) -> LargeOrderSummary:
     print(f"  Querying {source} …", flush=True)
     return compute_large_order_exhaustion(
-        DEFAULT_DUCKDB_PATH,
         data_source=source,  # type: ignore[arg-type]
         sse_high_pct=90.0,
         ratio_ma_window=20,
@@ -169,7 +176,7 @@ def _append_source_section(lines: list[str], result: LargeOrderSummary) -> None:
 def main() -> int:
     """Run validation for both data sources and produce reports."""
     print("Large-order exhaustion validation", flush=True)
-    print(f"DuckDB path: {DEFAULT_DUCKDB_PATH}", flush=True)
+    print("Data layer: Vibe-Trading ClickHouse connector (CLICKHOUSE_* env)", flush=True)
 
     ts_result: LargeOrderSummary | None = None
     ths_result: LargeOrderSummary | None = None

@@ -409,7 +409,7 @@ def _build_blocked_entry(cond: dict, report: dict) -> BlockedEntry:
         next_action = "Implement signal module: northbound net flow vs SSE divergence. Data already probed and available."
     elif cid == "etf_inflow_heat":
         provider_options = [
-            "Local DuckDB: fund_daily (2,074 ETFs, 2020-2026)",
+            "Local ClickHouse ashare: fund_daily (2,074 ETFs, 2020-2026)",
             "Tushare: fund_basic (ETF metadata)",
         ]
         cost_effort = "No cost. 3-5 days to implement signal module."

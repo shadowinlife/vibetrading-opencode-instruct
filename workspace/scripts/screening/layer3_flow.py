@@ -1,4 +1,8 @@
-"""Layer 3: Capital flow screening via DuckDB.
+"""Layer 3: Capital flow screening via ClickHouse.
+
+Data layer: queries run against the Vibe-Trading ClickHouse warehouse
+through ``scripts.screening.ch_client`` (env-configured ``CLICKHOUSE_*``
+connection, no hardcoded credentials).
 
 Screens stocks by:
 - Main force net inflow (large + extra-large orders) from stk_moneyflow
@@ -11,11 +15,9 @@ Usage:
 """
 from __future__ import annotations
 
-import duckdb
 import pandas as pd
-from pathlib import Path
 
-DB_PATH = Path(__file__).resolve().parents[2] / "duckdb" / "ashare.duckdb"
+from scripts.screening.ch_client import run_query
 
 # ── SQL: Main force net inflow ──
 # Stocks where main force (large + extra-large) is net buying today
@@ -49,11 +51,11 @@ SELECT
     mf.ts_code,
     si.name,
     si.industry,
-    ROUND(mf.net_mf_amount / 10000, 4)  AS net_mf_yi,
-    ROUND(mf.net_elg / 10000, 4)        AS net_elg_yi,
-    ROUND(mf.net_lg / 10000, 4)         AS net_lg_yi,
-    ROUND(ths.net_d5_amount / 10000, 4) AS net_d5_yi,
-    ROUND(ths.net_amount / 10000, 4)    AS net_1d_yi,
+    ROUND(mf.net_mf_amount / 10000.0, 4)  AS net_mf_yi,
+    ROUND(mf.net_elg / 10000.0, 4)        AS net_elg_yi,
+    ROUND(mf.net_lg / 10000.0, 4)         AS net_lg_yi,
+    ROUND(ths.net_d5_amount / 10000.0, 4) AS net_d5_yi,
+    ROUND(ths.net_amount / 10000.0, 4)    AS net_1d_yi,
     ROUND(ths.buy_lg_amount_rate, 2)    AS buy_lg_rate
 FROM mf_today mf
 JOIN ths_5d ths ON mf.ts_code = ths.ts_code
@@ -82,10 +84,10 @@ SELECT
     mn.ts_code,
     si.name,
     si.industry,
-    ROUND(mn.rzye / 10000, 4)           AS rzye_yi,
-    ROUND(mn.rzrqye / 10000, 4)         AS rzrqye_yi,
-    ROUND(mn.rzmre / 10000, 4)          AS rzmre_yi,
-    ROUND(mp.rzye_prev / 10000, 4)      AS rzye_prev_yi,
+    ROUND(mn.rzye / 10000.0, 4)           AS rzye_yi,
+    ROUND(mn.rzrqye / 10000.0, 4)         AS rzrqye_yi,
+    ROUND(mn.rzmre / 10000.0, 4)          AS rzmre_yi,
+    ROUND(mp.rzye_prev / 10000.0, 4)      AS rzye_prev_yi,
     ROUND(mn.rzye - mp.rzye_prev, 4)    AS rzye_delta,
     ROUND((mn.rzye - mp.rzye_prev) / NULLIF(mp.rzye_prev, 0) * 100, 2)
                                          AS rzye_growth_pct
@@ -146,11 +148,11 @@ SELECT
     mf.ts_code,
     si.name,
     si.industry,
-    ROUND(mf.net_mf_amount / 10000, 4)  AS net_mf_yi,
-    ROUND(mf.net_elg / 10000, 4)        AS net_elg_yi,
-    ROUND(ths.net_d5_amount / 10000, 4) AS net_d5_yi,
+    ROUND(mf.net_mf_amount / 10000.0, 4)  AS net_mf_yi,
+    ROUND(mf.net_elg / 10000.0, 4)        AS net_elg_yi,
+    ROUND(ths.net_d5_amount / 10000.0, 4) AS net_d5_yi,
     ROUND(ths.buy_lg_amount_rate, 2)    AS buy_lg_rate,
-    ROUND(mg.rzye / 10000, 4)           AS rzye_yi,
+    ROUND(mg.rzye / 10000.0, 4)           AS rzye_yi,
     ROUND(mg.rzye_growth_pct, 2)        AS rzye_growth_pct,
     CASE
         WHEN mg.ts_code IS NOT NULL THEN 3
@@ -172,12 +174,8 @@ DEFAULT_PARAMS = {
 
 
 def _run_sql(sql: str, params: dict) -> pd.DataFrame:
-    """Execute parameterized SQL against DuckDB and return DataFrame."""
-    db = duckdb.connect(str(DB_PATH), read_only=True)
-    try:
-        return db.execute(sql.format(**params)).fetchdf()
-    finally:
-        db.close()
+    """Execute parameterized SQL against ClickHouse and return a DataFrame."""
+    return run_query(sql.format(**params))
 
 
 def screen_main_force(
@@ -230,13 +228,9 @@ def screen_flow(
     if trade_date_prev is not None:
         params["trade_date_prev"] = trade_date_prev
 
-    db = duckdb.connect(str(DB_PATH), read_only=True)
-    try:
-        main_force_df = db.execute(MAIN_FORCE_SQL.format(**params)).fetchdf()
-        margin_df = db.execute(MARGIN_GROWTH_SQL.format(**params)).fetchdf()
-        flow_df = db.execute(COMBINED_FLOW_SQL.format(**params)).fetchdf()
-    finally:
-        db.close()
+    main_force_df = _run_sql(MAIN_FORCE_SQL, params)
+    margin_df = _run_sql(MARGIN_GROWTH_SQL, params)
+    flow_df = _run_sql(COMBINED_FLOW_SQL, params)
 
     summary: dict = {"count": len(flow_df)}
     if not flow_df.empty:

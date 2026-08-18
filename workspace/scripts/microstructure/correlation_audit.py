@@ -28,18 +28,33 @@ import sys
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
-import duckdb
 import numpy as np
 import pandas as pd
 from scipy.stats import pearsonr, spearmanr
+
+from scripts.microstructure.base import (
+    ClickHouseConnector,
+    connection_available,
+    get_connection,
+    unavailable_payload,
+)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Paths
 # ─────────────────────────────────────────────────────────────────────────────
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-DB_PATH = os.path.join(REPO_ROOT, "duckdb", "ashare.duckdb")
 OUTPUT_DIR = os.path.join(REPO_ROOT, "tmp", "microstructure", "validation")
+
+_CONN: Optional[ClickHouseConnector] = None
+
+
+def _shared_conn() -> ClickHouseConnector:
+    """Lazily create one ClickHouse connector shared by all extractors."""
+    global _CONN
+    if _CONN is None:
+        _CONN = get_connection()
+    return _CONN
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Condition metadata
@@ -104,7 +119,7 @@ CONDITION_INFO: Dict[str, dict] = {
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Signal extraction (DuckDB-dependent — not tested offline)
+# Signal extraction (ClickHouse-dependent — not tested offline)
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -112,7 +127,7 @@ def _extract_concentration_signal() -> pd.DataFrame:
     """Extract concentration signal (top5_share >= 0.50)."""
     from scripts.microstructure.tune_escape_top import _load_concentration_series
 
-    df = _load_concentration_series(DB_PATH)
+    df = _load_concentration_series(_shared_conn())
     df["signal"] = (df["top5_share"] >= 0.50).astype(int)
     df.rename(columns={"top5_share": "score_concentration"}, inplace=True)
     return df[["trade_date", "score_concentration", "signal"]].copy()
@@ -122,7 +137,7 @@ def _extract_margin_divergence_signal(lookback: int = 40) -> pd.DataFrame:
     """Extract margin buy/SSE divergence signal."""
     from scripts.microstructure.tune_escape_top import _load_margin_divergence_series
 
-    df = _load_margin_divergence_series(DB_PATH, divergence_lookback_days=lookback)
+    df = _load_margin_divergence_series(_shared_conn(), divergence_lookback_days=lookback)
     df["signal"] = df["divergence_hit"].astype(int)
     df.rename(columns={"margin_buy_ratio": "score_margin_divergence"}, inplace=True)
     return df[["trade_date", "score_margin_divergence", "signal"]].copy()
@@ -132,7 +147,7 @@ def _extract_breadth_signal() -> pd.DataFrame:
     """Extract breadth divergence signal (signal_120d)."""
     from scripts.microstructure.breadth_divergence import compute_breadth_signals
 
-    df = compute_breadth_signals(DB_PATH)
+    df = compute_breadth_signals(_shared_conn())
     df["signal"] = df["signal_120d"].astype(int)
     df.rename(columns={"breadth_ratio": "score_breadth_divergence"}, inplace=True)
     return df[["trade_date", "score_breadth_divergence", "signal"]].copy()
@@ -145,7 +160,7 @@ def _extract_turnover_mcap_signal(threshold: float = 0.025) -> pd.DataFrame:
         load_ratio_series,
     )
 
-    df_ratio = load_ratio_series(DB_PATH)
+    df_ratio = load_ratio_series(_shared_conn())
     df_sig = compute_heat_signal_series(
         df_ratio,
         absolute_threshold=threshold,
@@ -161,7 +176,7 @@ def _extract_volatility_signal() -> pd.DataFrame:
     """Extract joint volatility signal (ATR + realised vol both elevated)."""
     from scripts.microstructure.volatility_atr_expansion import compute_volatility_signals
 
-    df = compute_volatility_signals(DB_PATH)
+    df = compute_volatility_signals(_shared_conn())
     df["signal"] = df["joint_vol_signal"].astype(int)
     df.rename(columns={"atr": "score_atr", "realized_vol": "score_volatility_atr_expansion"}, inplace=True)
     return df[["trade_date", "score_volatility_atr_expansion", "signal"]].copy()
@@ -171,7 +186,7 @@ def _extract_valuation_signal() -> pd.DataFrame:
     """Extract valuation percentile signal (PE + PB >= 80th percentile)."""
     from scripts.microstructure.valuation_percentile import compute_valuation_series
 
-    df = compute_valuation_series(DB_PATH, force_local=True)
+    df = compute_valuation_series(_shared_conn(), force_local=True)
     df["signal"] = ((df["pe_percentile"] >= 80.0) & (df["pb_percentile"] >= 80.0)).astype(int)
     df["score_valuation_percentile"] = (df["pe_percentile"] + df["pb_percentile"]) / 2.0
     return df[["trade_date", "score_valuation_percentile", "signal"]].copy()
@@ -181,7 +196,7 @@ def _extract_sector_crowding_signal() -> pd.DataFrame:
     """Extract sector turnover crowding signal (HHI >= P80)."""
     from scripts.microstructure.sector_turnover_crowding import compute_sector_crowding
 
-    result = compute_sector_crowding(DB_PATH, sector_level="L1")
+    result = compute_sector_crowding(_shared_conn(), sector_level="L1")
     daily = pd.DataFrame(result["daily_series"])
     daily["trade_date"] = pd.to_datetime(daily["trade_date"])
     daily["hhi_percentile"] = daily["hhi"].rank(pct=True) * 100
@@ -194,7 +209,7 @@ def _extract_large_order_signal() -> pd.DataFrame:
     """Extract large-order exhaustion signal (signal_any, Tushare source)."""
     from scripts.microstructure.large_order_exhaustion import compute_exhaustion_signal_series
 
-    df = compute_exhaustion_signal_series(DB_PATH, data_source="tushare")
+    df = compute_exhaustion_signal_series(_shared_conn(), data_source="tushare")
     df["signal"] = df["signal_any"].astype(int)
     df.rename(columns={"sse_close": "score_large_order_exhaustion"}, inplace=True)
     return df[["trade_date", "score_large_order_exhaustion", "signal"]].copy()
@@ -204,7 +219,7 @@ def _extract_winner_rate_signal() -> pd.DataFrame:
     """Extract winner rate pressure signal."""
     from scripts.microstructure.winner_rate_pressure import compute_signal_series
 
-    df = compute_signal_series(duckdb_path=DB_PATH)
+    df = compute_signal_series(conn=_shared_conn())
     df["signal"] = df["signal"].astype(int)
     df.rename(columns={"avg_winner_rate": "score_winner_rate_pressure"}, inplace=True)
     return df[["trade_date", "score_winner_rate_pressure", "signal"]].copy()
@@ -738,8 +753,12 @@ def run_correlation_audit(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def main():
+def main() -> int:
     """CLI entry point."""
+    if not connection_available():
+        print(json.dumps(unavailable_payload(), ensure_ascii=False))
+        return 0
+
     print("=" * 70)
     print("Escape-Top Microstructure — Correlation Audit")
     print("=" * 70)
@@ -778,7 +797,8 @@ def main():
 
     print()
     print("Done.")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

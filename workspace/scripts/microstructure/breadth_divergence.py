@@ -38,8 +38,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .base import get_connection, pct_rank
-from .metadata import DEFAULT_DUCKDB_PATH, SSE_INDEX_CODE
+from .base import ClickHouseConnector, get_connection, pct_rank, query_dataframe
+from .metadata import SSE_INDEX_CODE
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -59,15 +59,16 @@ relative to the rolling window to qualify as 'index elevated'."""
 
 
 def _load_breadth_series(
-    duckdb_path: str = DEFAULT_DUCKDB_PATH,
+    conn: ClickHouseConnector | None = None,
 ) -> pd.DataFrame:
     """Compute daily breadth ratio from all A-shares in ``stk_factor_pro``.
 
     Returns a DataFrame with columns ``trade_date``, ``n_stocks``, ``up_num``,
     ``down_num``, ``flat_num``, ``breadth_ratio``, sorted by trade_date.
     """
-    con = get_connection(duckdb_path, read_only=True)
-    df = con.execute("""
+    if conn is None:
+        conn = get_connection()
+    df = query_dataframe(conn, """
         SELECT trade_date,
                COUNT(*)                                                   AS n_stocks,
                SUM(CASE WHEN pct_chg > 0 THEN 1 ELSE 0 END)              AS up_num,
@@ -77,8 +78,7 @@ def _load_breadth_series(
         WHERE pct_chg IS NOT NULL
         GROUP BY trade_date
         ORDER BY trade_date
-    """).fetchdf()
-    con.close()
+    """)
 
     df["trade_date"] = pd.to_datetime(df["trade_date"])
     # Breadth ratio: up / (up + down), ignoring flat
@@ -88,19 +88,19 @@ def _load_breadth_series(
 
 
 def _load_sse_close(
-    duckdb_path: str = DEFAULT_DUCKDB_PATH,
+    conn: ClickHouseConnector | None = None,
 ) -> pd.DataFrame:
     """Load SSE close prices from ``idx_factor_pro``.
 
     Returns columns ``trade_date``, ``sse_close``.
     """
-    con = get_connection(duckdb_path, read_only=True)
-    df = con.execute(
+    if conn is None:
+        conn = get_connection()
+    df = query_dataframe(
+        conn,
         "SELECT trade_date, close AS sse_close FROM idx_factor_pro "
-        "WHERE ts_code = ? ORDER BY trade_date",
-        [SSE_INDEX_CODE],
-    ).fetchdf()
-    con.close()
+        f"WHERE ts_code = '{SSE_INDEX_CODE}' ORDER BY trade_date",
+    )
     df["trade_date"] = pd.to_datetime(df["trade_date"])
     return df.reset_index(drop=True)
 
@@ -109,7 +109,7 @@ def _load_sse_close(
 
 
 def compute_breadth_signals(
-    duckdb_path: str = DEFAULT_DUCKDB_PATH,
+    conn: ClickHouseConnector | None = None,
     *,
     horizons: tuple[int, ...] = DEFAULT_HORIZONS,
     breadth_pct_threshold: float = DEFAULT_BREADTH_PCT_THRESHOLD,
@@ -119,8 +119,9 @@ def compute_breadth_signals(
 
     Parameters
     ----------
-    duckdb_path : str
-        Path to the DuckDB database.
+    conn : ClickHouseConnector or None
+        Vibe-Trading ClickHouse connector.  When ``None`` (default) a
+        connector is created from ``CLICKHOUSE_*`` environment config.
     horizons : tuple[int, ...]
         Rolling window sizes in trading days.  Default ``(20, 60, 120)``.
     breadth_pct_threshold : float
@@ -137,8 +138,10 @@ def compute_breadth_signals(
         ``breadth_pct_Hd``, ``close_pct_Hd`` (for each horizon H),
         ``signal_Hd`` (for each horizon H).
     """
-    df_b = _load_breadth_series(duckdb_path)
-    df_s = _load_sse_close(duckdb_path)
+    if conn is None:
+        conn = get_connection()
+    df_b = _load_breadth_series(conn)
+    df_s = _load_sse_close(conn)
     df = df_b.merge(df_s, on="trade_date", how="inner").sort_values("trade_date").reset_index(drop=True)
 
     for h in horizons:
@@ -173,7 +176,7 @@ def _compute_forward_drawdowns_from_df(
 ) -> pd.DataFrame:
     """Compute forward max drawdowns for the SSE close series in *df*.
 
-    Pure function — no DuckDB required.  Uses the same algorithm as
+    Pure function — no ClickHouse required.  Uses the same algorithm as
     ``tune_escape_top.compute_forward_drawdowns``.
 
     Parameters
@@ -344,7 +347,7 @@ def evaluate_signals(
 
 
 def grid_search_breadth_signals(
-    duckdb_path: str = DEFAULT_DUCKDB_PATH,
+    conn: ClickHouseConnector | None = None,
     *,
     horizons: tuple[int, ...] = DEFAULT_HORIZONS,
     breadth_thresholds: tuple[float, ...] = (10.0, 15.0, 20.0, 25.0, 30.0, 35.0, 40.0, 50.0),
@@ -356,7 +359,7 @@ def grid_search_breadth_signals(
     signal counts and mean forward drawdowns for each horizon.
     """
     df = compute_breadth_signals(
-        duckdb_path,
+        conn,
         horizons=horizons,
         breadth_pct_threshold=50.0,  # placeholder — overridden per grid cell
         index_pct_threshold=50.0,

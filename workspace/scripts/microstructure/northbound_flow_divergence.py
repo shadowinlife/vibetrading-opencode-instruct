@@ -30,9 +30,9 @@ Signal variants
 
 SSE data
 --------
-SSE Composite (000001.SH) close prices are loaded from local DuckDB
-``idx_factor_pro`` table. This is the only DuckDB dependency — the
-northbound flow data comes directly from Tushare.
+SSE Composite (000001.SH) close prices are loaded from the ClickHouse
+``idx_factor_pro`` table (ashare warehouse). This is the only warehouse
+dependency — the northbound flow data comes directly from Tushare.
 """
 
 from __future__ import annotations
@@ -42,12 +42,18 @@ import time
 from datetime import date, datetime
 from typing import Any
 
-import duckdb
 import numpy as np
 import pandas as pd
 
-from .base import format_date, get_connection, rolling_zscore, write_json
-from .metadata import DEFAULT_DUCKDB_PATH, SSE_INDEX_CODE
+from .base import (
+    ClickHouseConnector,
+    format_date,
+    get_connection,
+    query_dataframe,
+    rolling_zscore,
+    write_json,
+)
+from .metadata import SSE_INDEX_CODE
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
@@ -236,21 +242,22 @@ def fetch_northbound_data(
     return df
 
 
-# ── SSE data loading (DuckDB) ────────────────────────────────────────────────
+# ── SSE data loading (ClickHouse) ────────────────────────────────────────────
 
 
 def load_sse_data(
-    duckdb_path: str = DEFAULT_DUCKDB_PATH,
+    conn: ClickHouseConnector | None = None,
     *,
     start_date: str | None = None,
     end_date: str | None = None,
 ) -> pd.DataFrame:
-    """Load SSE Composite (000001.SH) close prices from DuckDB.
+    """Load SSE Composite (000001.SH) close prices from ClickHouse.
 
     Parameters
     ----------
-    duckdb_path : str
-        Path to DuckDB file.
+    conn : ClickHouseConnector or None
+        Vibe-Trading ClickHouse connector.  When ``None`` (default) a
+        connector is created from ``CLICKHOUSE_*`` environment config.
     start_date, end_date : str or None
         Optional date filters in YYYY-MM-DD format.
 
@@ -259,23 +266,22 @@ def load_sse_data(
     pd.DataFrame
         Columns: trade_date, close.
     """
-    con = get_connection(duckdb_path, read_only=True)
-    try:
-        where_parts = [f"ts_code = '{SSE_INDEX_CODE}'"]
-        if start_date is not None:
-            where_parts.append(f"trade_date >= '{start_date}'")
-        if end_date is not None:
-            where_parts.append(f"trade_date <= '{end_date}'")
+    if conn is None:
+        conn = get_connection()
 
-        query = f"""
-        SELECT trade_date, close
-        FROM idx_factor_pro
-        WHERE {' AND '.join(where_parts)}
-        ORDER BY trade_date
-        """
-        df = con.execute(query).fetchdf()
-    finally:
-        con.close()
+    where_parts = [f"ts_code = '{SSE_INDEX_CODE}'"]
+    if start_date is not None:
+        where_parts.append(f"trade_date >= '{start_date}'")
+    if end_date is not None:
+        where_parts.append(f"trade_date <= '{end_date}'")
+
+    query = f"""
+    SELECT trade_date, close
+    FROM idx_factor_pro
+    WHERE {' AND '.join(where_parts)}
+    ORDER BY trade_date
+    """
+    df = query_dataframe(conn, query)
 
     df["trade_date"] = pd.to_datetime(df["trade_date"])
     return df
@@ -515,7 +521,7 @@ def _build_summary(
 ) -> dict[str, Any]:
     """Build structured summary from computed signals DataFrame.
 
-    Pure function — no I/O, no DuckDB, no Tushare.
+    Pure function — no I/O, no ClickHouse, no Tushare.
     """
     df = df_signals.copy()
     latest: Any = df.iloc[-1]
@@ -641,7 +647,7 @@ def _build_summary(
 
 
 def compute_northbound_divergence(
-    duckdb_path: str = DEFAULT_DUCKDB_PATH,
+    conn: ClickHouseConnector | None = None,
     *,
     start_date: str | None = None,
     end_date: str | None = None,
@@ -655,14 +661,16 @@ def compute_northbound_divergence(
     """Compute northbound flow divergence signals.
 
     This is the primary entry point. It fetches northbound flow data from
-    Tushare, loads SSE close data from DuckDB, computes three signal variants
-    (outflow anomaly, flow weakening, cumulative divergence), and returns a
-    structured summary.
+    Tushare, loads SSE close data from ClickHouse, computes three signal
+    variants (outflow anomaly, flow weakening, cumulative divergence), and
+    returns a structured summary.
 
     Parameters
     ----------
-    duckdb_path : str
-        Path to DuckDB file for SSE data.
+    conn : ClickHouseConnector or None
+        Vibe-Trading ClickHouse connector for SSE data.  When ``None``
+        (default) a connector is created from ``CLICKHOUSE_*`` environment
+        config.
     start_date : str or None
         Start date in YYYYMMDD format. Default is 20170101.
     end_date : str or None
@@ -697,22 +705,22 @@ def compute_northbound_divergence(
         end_date=end_date,
     )
 
-    # Load SSE close from DuckDB
-    # Convert YYYYMMDD to YYYY-MM-DD for DuckDB query
+    # Load SSE close from ClickHouse
+    # Convert YYYYMMDD to YYYY-MM-DD for the warehouse query
     first_date = df_north["trade_date"].min()
     last_date = df_north["trade_date"].max()
     sse_start = first_date.strftime("%Y-%m-%d") if hasattr(first_date, "strftime") else str(first_date)[:10]
     sse_end = last_date.strftime("%Y-%m-%d") if hasattr(last_date, "strftime") else str(last_date)[:10]
 
     df_sse = load_sse_data(
-        duckdb_path,
+        conn,
         start_date=sse_start,
         end_date=sse_end,
     )
 
     if df_sse.empty:
         raise ValueError(
-            f"No SSE data in DuckDB for date range {sse_start} to {sse_end}"
+            f"No SSE data in ClickHouse for date range {sse_start} to {sse_end}"
         )
 
     # Compute signals
@@ -741,7 +749,7 @@ def compute_northbound_divergence(
     summary["source_metadata"] = {
         "northbound_source": "tushare:moneyflow_hsgt",
         "north_money_unit": NORTH_MONEY_UNIT,
-        "sse_source": "duckdb:idx_factor_pro",
+        "sse_source": "clickhouse:idx_factor_pro",
         "sse_index_code": SSE_INDEX_CODE,
         "data_fetch_time": datetime.now().isoformat(),
     }
@@ -753,7 +761,7 @@ def compute_northbound_divergence(
 
 
 def compute_signal_series(
-    duckdb_path: str = DEFAULT_DUCKDB_PATH,
+    conn: ClickHouseConnector | None = None,
     *,
     start_date: str | None = None,
     end_date: str | None = None,
@@ -770,12 +778,13 @@ def compute_signal_series(
 
     Supports data injection for offline testing:
     - df_north_inject → bypasses Tushare fetch
-    - df_sse_inject → bypasses DuckDB load
+    - df_sse_inject → bypasses ClickHouse load
 
     Parameters
     ----------
-    duckdb_path : str
-        Path to DuckDB file. Ignored if df_sse_inject is provided.
+    conn : ClickHouseConnector or None
+        Vibe-Trading ClickHouse connector. Ignored if df_sse_inject is
+        provided.
     start_date, end_date : str or None
         Date range for the data pull. Ignored if injection provided.
     north_lookback, flow_window, etc. : int/float
@@ -818,7 +827,7 @@ def compute_signal_series(
             else str(last_date)[:10]
         )
         df_sse = load_sse_data(
-            duckdb_path,
+            conn,
             start_date=sse_start,
             end_date=sse_end,
         )

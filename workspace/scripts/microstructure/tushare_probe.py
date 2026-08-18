@@ -208,7 +208,7 @@ def generate_hitl_requests(report: dict, output_path: str):
         "- Macro liquidity indicators (shibor, shibor_lpr, cn_m, cn_social_financing) — macro regime overlay",
         "- Options market data (opt_daily) — implied volatility for risk sentiment",
         "",
-        "The core escape-top signal (成交集中度 + 两融背离) can still be computed from local DuckDB data ",
+        "The core escape-top signal (成交集中度 + 两融背离) can still be computed from local ClickHouse data ",
         "without these external endpoints, but the enrichment modules will be limited.",
     ])
 

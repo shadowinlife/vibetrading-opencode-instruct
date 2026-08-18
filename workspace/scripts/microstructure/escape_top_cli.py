@@ -8,10 +8,9 @@ import json
 import sys
 from pathlib import Path
 
-from .base import write_json
+from .base import connection_available, unavailable_payload, write_json
 from .escape_top import compute_escape_warning
 from .metadata import (
-    DEFAULT_DUCKDB_PATH,
     DEFAULT_OUTPUT_DIR,
     ESCAPE_TOP_DEFAULT_CONCENTRATION_THRESHOLD,
     ESCAPE_TOP_DEFAULT_DIVERGENCE_LOOKBACK_DAYS,
@@ -31,12 +30,6 @@ examples:
   python -m scripts.microstructure.escape_top_cli --concentration-threshold 0.48 --lookback 10
   python -m scripts.microstructure.escape_top_cli --output ./tmp/escape_top.json
   python -m scripts.microstructure.escape_top_cli --start-date 2024-01-01 --end-date 2025-12-31""",
-    )
-    parser.add_argument(
-        "--duckdb-path",
-        default=DEFAULT_DUCKDB_PATH,
-        metavar="PATH",
-        help=f"path to DuckDB file (default: {DEFAULT_DUCKDB_PATH})",
     )
     parser.add_argument(
         "--output",
@@ -118,6 +111,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
+    if not connection_available():
+        print(json.dumps(unavailable_payload(), ensure_ascii=False))
+        return 0
+
     concentration_threshold = (
         args.concentration_threshold
         if args.concentration_threshold is not None
@@ -144,7 +141,6 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         result = compute_escape_warning(
-            duckdb_path=args.duckdb_path,
             concentration_threshold=concentration_threshold,
             divergence_lookback_days=divergence_lookback_days,
             temporal_window_days=temporal_window_days,

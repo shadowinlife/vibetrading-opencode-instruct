@@ -22,18 +22,17 @@ from __future__ import annotations
 
 from typing import Any
 
-import duckdb
 import numpy as np
 import pandas as pd
 
-from .base import format_date, get_connection
-from .metadata import CONCENTRATION_TOP_PCT, DEFAULT_DUCKDB_PATH, SSE_INDEX_CODE
+from .base import ClickHouseConnector, format_date, get_connection, query_dataframe
+from .metadata import CONCENTRATION_TOP_PCT, SSE_INDEX_CODE
 
 # ── Forward drawdowns ────────────────────────────────────────────────────────
 
 
 def compute_forward_drawdowns(
-    duckdb_path: str = DEFAULT_DUCKDB_PATH,
+    conn: ClickHouseConnector | None = None,
     *,
     horizons: list[int] | None = None,
 ) -> pd.DataFrame:
@@ -48,8 +47,9 @@ def compute_forward_drawdowns(
 
     Parameters
     ----------
-    duckdb_path : str
-        Path to the DuckDB database.
+    conn : ClickHouseConnector or None
+        Vibe-Trading ClickHouse connector.  When ``None`` (default) a
+        connector is created from ``CLICKHOUSE_*`` environment config.
     horizons : list[int] or None
         Forward windows in trading days.  Default ``[20, 60, 120]``.
 
@@ -62,13 +62,13 @@ def compute_forward_drawdowns(
     if horizons is None:
         horizons = [20, 60, 120]
 
-    con = get_connection(duckdb_path, read_only=True)
-    df = con.execute(
+    if conn is None:
+        conn = get_connection()
+    df = query_dataframe(
+        conn,
         "SELECT trade_date, close FROM idx_factor_pro "
-        "WHERE ts_code = ? ORDER BY trade_date",
-        [SSE_INDEX_CODE],
-    ).fetchdf()
-    con.close()
+        f"WHERE ts_code = '{SSE_INDEX_CODE}' ORDER BY trade_date",
+    )
 
     df["trade_date"] = pd.to_datetime(df["trade_date"])
     df = df.sort_values("trade_date").reset_index(drop=True)
@@ -130,7 +130,7 @@ def generate_labels(
 
 
 def _load_concentration_series(
-    duckdb_path: str = DEFAULT_DUCKDB_PATH,
+    conn: ClickHouseConnector | None = None,
     *,
     top_pct: float = CONCENTRATION_TOP_PCT,
 ) -> pd.DataFrame:
@@ -143,7 +143,7 @@ def _load_concentration_series(
     # local import avoids circularity at package-init time
     from .concentration import compute_concentration  # noqa: PLC0415
 
-    result = compute_concentration(duckdb_path, top_pct=top_pct)
+    result = compute_concentration(conn, top_pct=top_pct)
     daily = pd.DataFrame(result["daily_series"])
     daily["trade_date"] = pd.to_datetime(daily["trade_date"])
     return pd.DataFrame(
@@ -157,7 +157,7 @@ def _load_concentration_series(
 
 
 def _load_margin_divergence_series(
-    duckdb_path: str = DEFAULT_DUCKDB_PATH,
+    conn: ClickHouseConnector | None = None,
     *,
     divergence_lookback_days: int = 20,
 ) -> pd.DataFrame:
@@ -167,7 +167,8 @@ def _load_margin_divergence_series(
     directly (mirrors the logic in ``compute_margin_buy_vs_sse``) so the
     lookback window can be parameterised independently.
     """
-    con = get_connection(duckdb_path, read_only=True)
+    if conn is None:
+        conn = get_connection()
     query = """
     WITH
         turnover AS (
@@ -198,8 +199,7 @@ def _load_margin_divergence_series(
     WHERE t.total_amount_kcy > 0
     ORDER BY m.trade_date
     """
-    df = con.execute(query).fetchdf()
-    con.close()
+    df = query_dataframe(conn, query)
 
     df["trade_date"] = pd.to_datetime(df["trade_date"])
     lb = divergence_lookback_days
@@ -232,7 +232,7 @@ def _load_margin_divergence_series(
 
 
 def compute_signal_series(
-    duckdb_path: str = DEFAULT_DUCKDB_PATH,
+    conn: ClickHouseConnector | None = None,
     *,
     concentration_threshold: float = 0.45,
     divergence_lookback_days: int = 20,
@@ -244,8 +244,9 @@ def compute_signal_series(
 
     Parameters
     ----------
-    duckdb_path : str
-        Path to DuckDB.  Ignored when *df_conc* / *df_div* are supplied.
+    conn : ClickHouseConnector or None
+        Vibe-Trading ClickHouse connector.  Ignored when *df_conc* /
+        *df_div* are supplied.
     concentration_threshold : float
         ``top5_share`` above which the concentration leg fires.
     divergence_lookback_days : int
@@ -266,10 +267,10 @@ def compute_signal_series(
         ``divergence_hit``, ``joint_signal``, ``margin_buy_ratio``.
     """
     if df_conc is None:
-        df_conc = _load_concentration_series(duckdb_path, top_pct=concentration_top_pct)
+        df_conc = _load_concentration_series(conn, top_pct=concentration_top_pct)
     if df_div is None:
         df_div = _load_margin_divergence_series(
-            duckdb_path, divergence_lookback_days=divergence_lookback_days
+            conn, divergence_lookback_days=divergence_lookback_days
         )
 
     df = df_conc.merge(
@@ -401,7 +402,7 @@ def _eval_params(
 
 
 def grid_search(
-    duckdb_path: str = DEFAULT_DUCKDB_PATH,
+    conn: ClickHouseConnector | None = None,
     *,
     concentration_thresholds: list[float] | None = None,
     divergence_lookbacks: list[int] | None = None,
@@ -414,8 +415,9 @@ def grid_search(
 
     Parameters
     ----------
-    duckdb_path : str
-        Path to the DuckDB database.
+    conn : ClickHouseConnector or None
+        Vibe-Trading ClickHouse connector.  When ``None`` (default) a
+        connector is created from ``CLICKHOUSE_*`` environment config.
     concentration_thresholds : list[float] or None
         Thresholds for the concentration leg.
         Default: ``[0.40, 0.43, 0.45, 0.48, 0.50]``.
@@ -447,19 +449,22 @@ def grid_search(
     if dd_thresholds is None:
         dd_thresholds = {20: -0.03, 60: -0.05, 120: -0.08}
 
+    if conn is None:
+        conn = get_connection()
+
     # 1. Load shared data once
     print(f"[tune] Loading SSE close with forward drawdowns …", flush=True)
-    df_sse = compute_forward_drawdowns(duckdb_path, horizons=horizons)
+    df_sse = compute_forward_drawdowns(conn, horizons=horizons)
 
     print(f"[tune] Loading concentration series …", flush=True)
-    df_conc = _load_concentration_series(duckdb_path, top_pct=concentration_top_pct)
+    df_conc = _load_concentration_series(conn, top_pct=concentration_top_pct)
 
     # Cache divergence series per unique lookback
     print(f"[tune] Loading margin divergence series for {len(set(divergence_lookbacks))} lookbacks …", flush=True)
     _div_cache: dict[int, pd.DataFrame] = {}
     for lb in sorted(set(divergence_lookbacks)):
         _div_cache[lb] = _load_margin_divergence_series(
-            duckdb_path, divergence_lookback_days=lb
+            conn, divergence_lookback_days=lb
         )
 
     # 2. Grid evaluation
@@ -478,7 +483,7 @@ def grid_search(
 
             df_div = _div_cache[div_lb]
             df_sig = compute_signal_series(
-                duckdb_path,
+                conn,
                 concentration_threshold=conc_thresh,
                 concentration_top_pct=concentration_top_pct,
                 df_conc=df_conc,

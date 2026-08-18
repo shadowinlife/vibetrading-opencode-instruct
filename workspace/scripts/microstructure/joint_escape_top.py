@@ -1,9 +1,10 @@
 """
 Joint escape-top warning module with ensemble-based multi-condition resolution.
 
-Loads validated condition signal series from DuckDB, resolves a unified
-warning level via :mod:`ensemble`, and returns structured output with
-per-condition contributions, excluded conditions, and configuration metadata.
+Loads validated condition signal series from the ClickHouse warehouse,
+resolves a unified warning level via :mod:`ensemble`, and returns structured
+output with per-condition contributions, excluded conditions, and
+configuration metadata.
 
 **Design principles** inherited from the escape-top validation framework:
 
@@ -28,9 +29,8 @@ from typing import Any
 
 import pandas as pd
 
-from .base import get_connection
+from .base import ClickHouseConnector, get_connection
 from .ensemble import ConditionResult, EnsembleConfig, resolve_ensemble
-from .metadata import DEFAULT_DUCKDB_PATH
 
 # ── Public constants ───────────────────────────────────────────────────────────
 
@@ -75,7 +75,7 @@ _EXCLUDED_CLASSIFICATIONS = frozenset(
 
 
 def compute_joint_warning(
-    duckdb_path: str = DEFAULT_DUCKDB_PATH,
+    conn: ClickHouseConnector | None = None,
     *,
     config: EnsembleConfig | None = None,
     manifest_path: str | Path | None = None,
@@ -85,14 +85,15 @@ def compute_joint_warning(
 ) -> dict[str, Any]:
     """Compute the joint ensemble escape-top warning.
 
-    Loads validated condition signal series from the local DuckDB, resolves
-    the ensemble warning level for the latest trading day, and returns a
-    structured dictionary.
+    Loads validated condition signal series from the ClickHouse warehouse,
+    resolves the ensemble warning level for the latest trading day, and
+    returns a structured dictionary.
 
     Parameters
     ----------
-    duckdb_path : str
-        Path to the DuckDB database.
+    conn : ClickHouseConnector or None
+        Vibe-Trading ClickHouse connector.  When ``None`` (default) a
+        connector is created from ``CLICKHOUSE_*`` environment config.
     config : EnsembleConfig or None
         Ensemble resolution configuration.  Defaults to
         ``EnsembleConfig(mode="VOTE_K_OF_M")`` which, with 2 validated
@@ -138,6 +139,9 @@ def compute_joint_warning(
     FileNotFoundError
         If the condition manifest cannot be located.
     """
+    if conn is None:
+        conn = get_connection()
+
     # 1. Load condition manifest
     mf_path = _resolve_manifest_path(manifest_path)
     manifest = _load_manifest(mf_path)
@@ -161,7 +165,7 @@ def compute_joint_warning(
     # 4. Load signal series for each active condition
     signal_dfs: dict[str, pd.DataFrame] = {}
     for cid in active_ids:
-        signal_dfs[cid] = _load_signal_series(cid, duckdb_path, start_date, end_date)
+        signal_dfs[cid] = _load_signal_series(cid, conn, start_date, end_date)
 
     # 5. Align all signal series on trade_date and extract latest-day signals
     aligned = _align_signal_series(signal_dfs)
@@ -208,7 +212,7 @@ def compute_joint_warning(
             from .board_concentration import compute_board_concentration
 
             board_result = compute_board_concentration(
-                duckdb_path, trade_date=report_date_str,
+                conn, trade_date=report_date_str,
             )
             output["board_concentration"] = board_result
         except Exception as exc:  # noqa: BLE001
@@ -221,7 +225,7 @@ def compute_joint_warning(
 
 
 def compute_joint_signal_series(
-    duckdb_path: str = DEFAULT_DUCKDB_PATH,
+    conn: ClickHouseConnector | None = None,
     *,
     config: EnsembleConfig | None = None,
     manifest_path: str | Path | None = None,
@@ -242,6 +246,9 @@ def compute_joint_signal_series(
         Columns: ``trade_date``, ``<condition_id>_hit`` for each active
         condition, ``joint_warning``.
     """
+    if conn is None:
+        conn = get_connection()
+
     mf_path = _resolve_manifest_path(manifest_path)
     manifest = _load_manifest(mf_path)
 
@@ -256,7 +263,7 @@ def compute_joint_signal_series(
     # Load all signal series
     signal_dfs = {}
     for cid in active_ids:
-        signal_dfs[cid] = _load_signal_series(cid, duckdb_path, start_date, end_date)
+        signal_dfs[cid] = _load_signal_series(cid, conn, start_date, end_date)
 
     aligned = _align_signal_series(signal_dfs)
 
@@ -337,7 +344,7 @@ def _exclusion_reason(condition: dict[str, Any]) -> str:
 
 def _load_signal_series(
     condition_id: str,
-    duckdb_path: str,
+    conn: ClickHouseConnector,
     start_date: str | None,
     end_date: str | None,
 ) -> pd.DataFrame:
@@ -347,7 +354,7 @@ def _load_signal_series(
 
         lb = _CONDITION_DEFAULTS["margin_divergence"]["divergence_lookback_days"]
         df: pd.DataFrame = _load_margin_divergence_series(
-            duckdb_path, divergence_lookback_days=lb
+            conn, divergence_lookback_days=lb
         )
         df["_signal"] = df["divergence_hit"].astype(bool)
         return pd.DataFrame(df[["trade_date", "_signal"]])
@@ -359,7 +366,7 @@ def _load_signal_series(
 
         d = _CONDITION_DEFAULTS["volatility_atr_expansion"]
         df: pd.DataFrame = compute_volatility_signals(
-            duckdb_path,
+            conn,
             atr_rolling_days=d["atr_rolling_days"],
             atr_percentile=d["atr_percentile"],
             vol_rolling_days=d["vol_rolling_days"],
@@ -379,7 +386,7 @@ def _load_signal_series(
 
         d = _CONDITION_DEFAULTS["concentration"]
         threshold = d.get("concentration_threshold", 0.50)
-        df: pd.DataFrame = _load_concentration_series(duckdb_path)
+        df: pd.DataFrame = _load_concentration_series(conn)
         df["_signal"] = (df["top5_share"] >= threshold).astype(bool)
         return pd.DataFrame(df[["trade_date", "_signal"]])
 
@@ -392,7 +399,7 @@ def _load_signal_series(
         source = d.get("data_source", "tushare")
         col = d.get("signal_column", "signal_any")
         df: pd.DataFrame = compute_exhaustion_signal_series(
-            duckdb_path, data_source=source,
+            conn, data_source=source,
         )
         if col not in df.columns:
             raise ValueError(

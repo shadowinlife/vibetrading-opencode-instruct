@@ -1,8 +1,11 @@
 """Composite signal builders: regime-aware blending, moneyflow confirmation
 gate, and IC-weighted dynamic signal.
 
-``regime_composite_z`` and ``ic_weighted_z`` compute all 158 Alpha158 factors
-internally from raw OHLCV via ``scripts.alpha158.compute_alpha158``.
+``regime_composite_z`` and ``ic_weighted_z`` require the Alpha158 factor
+compute module, which was retired together with the local backtest engine —
+its successor is Vibe-Trading's alpha-zoo ``qlib158`` family. Until these
+builders are rewired onto that factor source, calling them raises an
+explicit error instead of failing with a bare ModuleNotFoundError.
 
 ``mf_confirmation_z`` requires external moneyflow and margin DataFrames
 passed as keyword arguments; returns NaN series with a warning if absent.
@@ -16,7 +19,7 @@ from typing import cast
 import numpy as np
 import pandas as pd
 
-from scripts.backtest.signal_builders._common import EPS
+from scripts.vibe_bridge.signal_builders._common import EPS
 
 _SUB_SIGNALS = [
     "S_MOMENTUM", "S_REVERSAL", "S_VOLATILITY",
@@ -33,7 +36,14 @@ def _build_all_factors_and_groups(
     open_: pd.Series | None = None,
 ) -> pd.DataFrame:
     """Compute all 158 Alpha158 factors and return DataFrame with group sub-signals."""
-    from scripts.alpha158 import compute_alpha158
+    try:
+        from scripts.alpha158 import compute_alpha158
+    except ImportError as exc:
+        raise RuntimeError(
+            "Alpha158 factor compute is unavailable: the local alpha158 module "
+            "was retired with the backtest engine. Use Vibe-Trading's alpha-zoo "
+            "qlib158 factors (vibe-trading alpha zoo) instead."
+        ) from exc
 
     if open_ is None:
         open_ = close

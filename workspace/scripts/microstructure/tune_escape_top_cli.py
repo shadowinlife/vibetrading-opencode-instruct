@@ -19,10 +19,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import json
+
 import pandas as pd
 
-from .base import write_json
-from .metadata import DEFAULT_DUCKDB_PATH, DEFAULT_OUTPUT_DIR
+from .base import connection_available, unavailable_payload, write_json
+from .metadata import DEFAULT_OUTPUT_DIR
 from .tune_escape_top import grid_search
 
 # ── Quick/full grids ─────────────────────────────────────────────────────────
@@ -42,12 +44,6 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m scripts.microstructure.tune_escape_top_cli",
         description="Grid-search escape-top parameters against forward SSE drawdowns.",
-    )
-    parser.add_argument(
-        "--duckdb-path",
-        default=DEFAULT_DUCKDB_PATH,
-        metavar="PATH",
-        help=f"path to DuckDB file (default: {DEFAULT_DUCKDB_PATH})",
     )
     parser.add_argument(
         "--output-dir",
@@ -190,6 +186,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
+    if not connection_available():
+        print(json.dumps(unavailable_payload(), ensure_ascii=False))
+        return 0
+
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -221,7 +221,6 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         result = grid_search(
-            duckdb_path=args.duckdb_path,
             concentration_thresholds=conc_thresh,
             divergence_lookbacks=div_lb,
             horizons=horizons,

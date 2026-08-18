@@ -20,37 +20,37 @@ from __future__ import annotations
 import functools
 from typing import Callable
 
-from scripts.backtest.signal_builders.moving_average import (
+from scripts.vibe_bridge.signal_builders.moving_average import (
     ma_deviation_z,
     ma_spread_z,
     ma_alignment_z,
 )
-from scripts.backtest.signal_builders.momentum import (
+from scripts.vibe_bridge.signal_builders.momentum import (
     roc_composite_z,
     trend_trinity_z,
     breakout_z,
     sustain_z,
 )
-from scripts.backtest.signal_builders.mean_reversion import (
+from scripts.vibe_bridge.signal_builders.mean_reversion import (
     resi_rev_z,
     oversold_z,
     time_exh_z,
 )
-from scripts.backtest.signal_builders.volume_price import (
+from scripts.vibe_bridge.signal_builders.volume_price import (
     divergence_z,
     vol_anomaly_z,
     order_flow_z,
 )
-from scripts.backtest.signal_builders.candlestick import (
+from scripts.vibe_bridge.signal_builders.candlestick import (
     kbar_score_z,
     shadow_z,
 )
-from scripts.backtest.signal_builders.composite import (
+from scripts.vibe_bridge.signal_builders.composite import (
     regime_composite_z,
     mf_confirmation_z,
     ic_weighted_z,
 )
-from scripts.backtest.signal_builders.multi_momentum import (
+from scripts.vibe_bridge.signal_builders.multi_momentum import (
     mom_short_z,
     mom_mid_z,
     mom_long_z,

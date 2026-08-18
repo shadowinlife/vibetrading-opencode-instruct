@@ -9,10 +9,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from .base import write_json
+from .base import connection_available, unavailable_payload, write_json
 from .ensemble import EnsembleConfig, EnsembleMode
 from .joint_escape_top import compute_joint_warning
-from .metadata import DEFAULT_DUCKDB_PATH, DEFAULT_OUTPUT_DIR
+from .metadata import DEFAULT_OUTPUT_DIR
 
 _VALID_MODES: tuple[str, ...] = ("AND", "VOTE_K_OF_M", "WEIGHTED_SCORE")
 
@@ -32,12 +32,6 @@ examples:
   python -m scripts.microstructure.joint_escape_top_cli --mode weighted --weights margin_divergence=0.6,volatility_atr_expansion=0.4
   python -m scripts.microstructure.joint_escape_top_cli --start-date 2024-01-01
   python -m scripts.microstructure.joint_escape_top_cli --include-rejected""",
-    )
-    parser.add_argument(
-        "--duckdb-path",
-        default=DEFAULT_DUCKDB_PATH,
-        metavar="PATH",
-        help=f"path to DuckDB file (default: {DEFAULT_DUCKDB_PATH})",
     )
     parser.add_argument(
         "--output",
@@ -164,6 +158,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
+    if not connection_available():
+        print(json.dumps(unavailable_payload(), ensure_ascii=False))
+        return 0
+
     try:
         config = _build_ensemble_config(args)
     except (ValueError, KeyError) as exc:
@@ -172,7 +170,6 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         result = compute_joint_warning(
-            duckdb_path=args.duckdb_path,
             config=config,
             manifest_path=args.manifest_path,
             start_date=args.start_date,

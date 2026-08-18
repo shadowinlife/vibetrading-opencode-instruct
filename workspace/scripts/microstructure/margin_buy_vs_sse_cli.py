@@ -8,9 +8,9 @@ import json
 import sys
 from pathlib import Path
 
-from .base import write_json
+from .base import connection_available, unavailable_payload, write_json
 from .margin_buy_vs_sse import compute_margin_buy_vs_sse
-from .metadata import DEFAULT_DUCKDB_PATH, DEFAULT_OUTPUT_DIR
+from .metadata import DEFAULT_OUTPUT_DIR
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -23,12 +23,6 @@ examples:
   python -m scripts.microstructure.margin_buy_vs_sse_cli
   python -m scripts.microstructure.margin_buy_vs_sse_cli --output ./tmp/margin_summary.json
   python -m scripts.microstructure.margin_buy_vs_sse_cli --start-date 2024-01-01 --end-date 2026-05-26""",
-    )
-    parser.add_argument(
-        "--duckdb-path",
-        default=DEFAULT_DUCKDB_PATH,
-        metavar="PATH",
-        help=f"path to DuckDB file (default: {DEFAULT_DUCKDB_PATH})",
     )
     parser.add_argument(
         "--output",
@@ -66,9 +60,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
+    if not connection_available():
+        print(json.dumps(unavailable_payload(), ensure_ascii=False))
+        return 0
+
     try:
         result = compute_margin_buy_vs_sse(
-            duckdb_path=args.duckdb_path,
             start_date=args.start_date,
             end_date=args.end_date,
         )

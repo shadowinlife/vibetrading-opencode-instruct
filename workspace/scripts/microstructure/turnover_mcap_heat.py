@@ -29,12 +29,18 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
-import duckdb
 import numpy as np
 import pandas as pd
 
-from .base import format_date, get_connection, pct_rank, rolling_zscore, write_json
-from .metadata import DEFAULT_DUCKDB_PATH
+from .base import (
+    ClickHouseConnector,
+    format_date,
+    get_connection,
+    pct_rank,
+    query_dataframe,
+    rolling_zscore,
+    write_json,
+)
 
 # ── Private helpers ──────────────────────────────────────────────────────────
 
@@ -67,7 +73,7 @@ def _build_where_clause(start_date: str | None, end_date: str | None) -> str:
 
 
 def compute_ratio_from_stocks(
-    con_or_path: duckdb.DuckDBPyConnection | str = DEFAULT_DUCKDB_PATH,
+    conn: ClickHouseConnector | None = None,
     *,
     start_date: str | date | None = None,
     end_date: str | date | None = None,
@@ -87,7 +93,9 @@ def compute_ratio_from_stocks(
 
     Parameters
     ----------
-    con_or_path : DuckDB connection or path string
+    conn : ClickHouseConnector or None
+        Vibe-Trading ClickHouse connector.  When ``None`` (default) a
+        connector is created from ``CLICKHOUSE_*`` environment config.
     start_date, end_date : str or date, optional
         Trade-date window (inclusive).
 
@@ -100,34 +108,27 @@ def compute_ratio_from_stocks(
     start_str, end_str = _validate_date_window(start_date, end_date)
     where_clause = _build_where_clause(start_str, end_str)
 
-    own_connection = isinstance(con_or_path, str)
-    if own_connection:
-        con = get_connection(con_or_path, read_only=True)
-    else:
-        con = con_or_path
+    if conn is None:
+        conn = get_connection()
 
-    try:
-        query = f"""
-        SELECT
-            trade_date,
-            SUM(amount)   AS total_amount_kyuan,
-            SUM(total_mv) AS total_mv_wyuan,
-            SUM(amount) / (NULLIF(SUM(total_mv), 0) * 10.0) AS ratio,
-            COUNT(DISTINCT ts_code) AS stock_count
-        FROM stk_factor_pro
-        WHERE amount IS NOT NULL
-          AND amount > 0
-          AND total_mv IS NOT NULL
-          AND total_mv > 0
-          AND (ts_code LIKE '%.SH' OR ts_code LIKE '%.SZ' OR ts_code LIKE '%.BJ')
-          {where_clause}
-        GROUP BY trade_date
-        ORDER BY trade_date
-        """
-        df = con.execute(query).fetchdf()
-    finally:
-        if own_connection:
-            con.close()
+    query = f"""
+    SELECT
+        trade_date,
+        SUM(amount)   AS total_amount_kyuan,
+        SUM(total_mv) AS total_mv_wyuan,
+        SUM(amount) / (NULLIF(SUM(total_mv), 0) * 10.0) AS ratio,
+        COUNT(DISTINCT ts_code) AS stock_count
+    FROM stk_factor_pro
+    WHERE amount IS NOT NULL
+      AND amount > 0
+      AND total_mv IS NOT NULL
+      AND total_mv > 0
+      AND (ts_code LIKE '%.SH' OR ts_code LIKE '%.SZ' OR ts_code LIKE '%.BJ')
+      {where_clause}
+    GROUP BY trade_date
+    ORDER BY trade_date
+    """
+    df = query_dataframe(conn, query)
 
     df["trade_date"] = pd.to_datetime(df["trade_date"])
     return df
@@ -137,7 +138,7 @@ def compute_ratio_from_stocks(
 
 
 def compute_ratio_from_index(
-    con_or_path: duckdb.DuckDBPyConnection | str = DEFAULT_DUCKDB_PATH,
+    conn: ClickHouseConnector | None = None,
     *,
     index_code: str = "000001.SH",
     start_date: str | date | None = None,
@@ -153,7 +154,9 @@ def compute_ratio_from_index(
 
     Parameters
     ----------
-    con_or_path : DuckDB connection or path string
+    conn : ClickHouseConnector or None
+        Vibe-Trading ClickHouse connector.  When ``None`` (default) a
+        connector is created from ``CLICKHOUSE_*`` environment config.
     index_code : str
         Index code in Tushare format (default ``"000001.SH"`` = SSE Composite).
     start_date, end_date : str or date, optional
@@ -167,31 +170,24 @@ def compute_ratio_from_index(
     start_str, end_str = _validate_date_window(start_date, end_date)
     where_clause = _build_where_clause(start_str, end_str)
 
-    own_connection = isinstance(con_or_path, str)
-    if own_connection:
-        con = get_connection(con_or_path, read_only=True)
-    else:
-        con = con_or_path
+    if conn is None:
+        conn = get_connection()
 
-    try:
-        query = f"""
-        SELECT
-            trade_date,
-            total_mv       AS total_mv_wyuan,
-            turnover_rate  AS turnover_rate_pct,
-            turnover_rate / 100.0 AS ratio,
-            ts_code        AS index_code
-        FROM idx_quote_dc
-        WHERE ts_code = '{index_code}'
-          AND turnover_rate IS NOT NULL
-          AND total_mv IS NOT NULL
-          {where_clause}
-        ORDER BY trade_date
-        """
-        df = con.execute(query).fetchdf()
-    finally:
-        if own_connection:
-            con.close()
+    query = f"""
+    SELECT
+        trade_date,
+        total_mv       AS total_mv_wyuan,
+        turnover_rate  AS turnover_rate_pct,
+        turnover_rate / 100.0 AS ratio,
+        ts_code        AS index_code
+    FROM idx_quote_dc
+    WHERE ts_code = '{index_code}'
+      AND turnover_rate IS NOT NULL
+      AND total_mv IS NOT NULL
+      {where_clause}
+    ORDER BY trade_date
+    """
+    df = query_dataframe(conn, query)
 
     if df.empty:
         raise ValueError(
@@ -280,7 +276,7 @@ def _build_turnover_heat_summary(
 ) -> dict[str, Any]:
     """Build a structured summary from the daily ratio + signal DataFrame.
 
-    This is a pure function — no I/O, no DuckDB.  Separated for testability.
+    This is a pure function — no I/O, no ClickHouse.  Separated for testability.
     """
     latest: Any = df.iloc[-1]
     latest_trade_date: pd.Timestamp = pd.Timestamp(latest["trade_date"])
@@ -361,7 +357,7 @@ def _build_turnover_heat_summary(
 
 
 def compute_turnover_mcap_heat(
-    con_or_path: duckdb.DuckDBPyConnection | str = DEFAULT_DUCKDB_PATH,
+    conn: ClickHouseConnector | None = None,
     *,
     start_date: str | date | None = None,
     end_date: str | date | None = None,
@@ -378,7 +374,9 @@ def compute_turnover_mcap_heat(
 
     Parameters
     ----------
-    con_or_path : DuckDB connection or path string
+    conn : ClickHouseConnector or None
+        Vibe-Trading ClickHouse connector.  When ``None`` (default) a
+        connector is created from ``CLICKHOUSE_*`` environment config.
     start_date, end_date : str or date, optional
     absolute_threshold : float or None
         Absolute ratio threshold for heat signal.  ``None`` disables.
@@ -403,13 +401,16 @@ def compute_turnover_mcap_heat(
     """
     start_str, end_str = _validate_date_window(start_date, end_date)
 
+    if conn is None:
+        conn = get_connection()
+
     if source == "idx_quote_dc":
         df = compute_ratio_from_index(
-            con_or_path, start_date=start_str, end_date=end_str
+            conn, start_date=start_str, end_date=end_str
         )
     else:
         df = compute_ratio_from_stocks(
-            con_or_path, start_date=start_str, end_date=end_str
+            conn, start_date=start_str, end_date=end_str
         )
 
     if df.empty:
@@ -437,7 +438,7 @@ def compute_turnover_mcap_heat(
 
 
 def load_ratio_series(
-    duckdb_path: str = DEFAULT_DUCKDB_PATH,
+    conn: ClickHouseConnector | None = None,
     *,
     source: str = "stk_factor_pro",
     start_date: str | date | None = None,
@@ -450,7 +451,9 @@ def load_ratio_series(
 
     Parameters
     ----------
-    duckdb_path : str
+    conn : ClickHouseConnector or None
+        Vibe-Trading ClickHouse connector.  When ``None`` (default) a
+        connector is created from ``CLICKHOUSE_*`` environment config.
     source : str
         ``"stk_factor_pro"`` or ``"idx_quote_dc"``.
     start_date, end_date : str or date, optional
@@ -462,11 +465,11 @@ def load_ratio_series(
     """
     if source == "idx_quote_dc":
         df = compute_ratio_from_index(
-            duckdb_path, start_date=start_date, end_date=end_date
+            conn, start_date=start_date, end_date=end_date
         )
     else:
         df = compute_ratio_from_stocks(
-            duckdb_path, start_date=start_date, end_date=end_date
+            conn, start_date=start_date, end_date=end_date
         )
     return pd.DataFrame(
         df[["trade_date", "ratio"]]

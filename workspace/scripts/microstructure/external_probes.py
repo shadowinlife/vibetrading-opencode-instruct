@@ -2,11 +2,12 @@
 Unified probe module for P1 external-data conditions (#10-16).
 
 Each probe checks actual data coverage (date range, row counts) from
-local DuckDB or Tushare API. Produces per-condition status + coverage.
+the ClickHouse ashare warehouse or the Tushare API. Produces per-condition
+status + coverage.
 
 Rules:
   - NEVER print token
-  - Probe local DuckDB first, then Tushare API
+  - Probe the ClickHouse warehouse first, then the Tushare API
   - If source is API-blocked → classify blocked with blocker detail
   - If source is scraping-only → classify research-only with HITL note
 """
@@ -30,8 +31,8 @@ class ProbeResult:
     """Result of probing a single P1 condition source."""
     condition_id: int
     condition_name: str
-    source_checked: str              # e.g. "DuckDB fund_daily" or "Tushare moneyflow_hsgt"
-    access_path: str                 # "local-duckdb" | "tushare-api" | "scraping-only" | "defer"
+    source_checked: str              # e.g. "ClickHouse fund_daily" or "Tushare moneyflow_hsgt"
+    access_path: str                 # "local-clickhouse" | "tushare-api" | "scraping-only" | "defer"
     status: str                      # "available" | "blocked" | "research-only" | "partial"
     coverage_years: str              # e.g. "2020-2026" or "2020-02-10 to 2026-05-27"
     coverage_min: str                # ISO date string
@@ -140,29 +141,62 @@ def probe_northbound() -> ProbeResult:
 # ---------------------------------------------------------------------------
 
 def probe_etf_flow() -> ProbeResult:
-    """Probe ETF flow coverage from local DuckDB fund_daily + Tushare fund_basic.
+    """Probe ETF flow coverage from ClickHouse ashare fund_daily + Tushare fund_basic.
 
-    fund_daily: already in DuckDB (1,037,573 rows, 2,074 ETF codes)
-    fund_basic: Tushare API (not in DuckDB) — need to check ETF metadata availability
+    fund_daily: already in the ClickHouse ashare warehouse
+    fund_basic: Tushare API (not in the warehouse) — need to check ETF
+    metadata availability.
     """
-    import duckdb
-    db_path = "./duckdb/ashare.duckdb"
+    from scripts.microstructure.base import (
+        connection_available,
+        get_connection,
+    )
 
-    # Part 1: Local fund_daily coverage
-    con = duckdb.connect(db_path, read_only=True)
+    # Part 1: fund_daily coverage in the ClickHouse ashare warehouse
+    if not connection_available():
+        return ProbeResult(
+            condition_id=11,
+            condition_name="ETF inflow heat",
+            source_checked="ClickHouse ashare fund_daily",
+            access_path="local-clickhouse",
+            status="blocked",
+            coverage_years="N/A",
+            coverage_min="N/A",
+            coverage_max="N/A",
+            row_estimate=0,
+            distinct_entities=0,
+            fields_available=[],
+            notes="ClickHouse warehouse unreachable.",
+            blocker=(
+                "ClickHouse warehouse unreachable — check CLICKHOUSE_* "
+                "environment configuration."
+            ),
+            human_action="Configure CLICKHOUSE_* env vars for the ashare warehouse.",
+        )
+
     try:
-        local = con.execute("""
+        conn = get_connection()
+        # Raw connector query: fund_daily.trade_date is a YYYYMMDD String;
+        # the typed helper would coerce it to a number and break the
+        # date-format conversion below.
+        local = conn.query("""
             SELECT
-                COUNT(*) as n,
-                COUNT(DISTINCT ts_code) as codes,
-                MIN(trade_date) as min_d,
-                MAX(trade_date) as max_d
+                COUNT(*) AS n,
+                COUNT(DISTINCT ts_code) AS codes,
+                MIN(trade_date) AS min_d,
+                MAX(trade_date) AS max_d
             FROM fund_daily
-        """).fetchone()
-        n, codes, min_d, max_d = local
+        """)
+        if local.empty:
+            n, codes, min_d, max_d = 0, 0, "N/A", "N/A"
+        else:
+            row = local.iloc[0]
+            n = int(row["n"])
+            codes = int(row["codes"])
+            min_d = str(row["min_d"])
+            max_d = str(row["max_d"])
     except Exception:
         n, codes, min_d, max_d = 0, 0, "N/A", "N/A"
-    con.close()
 
     # Part 2: Tushare fund_basic for ETF metadata
     pro = _get_pro()
@@ -185,9 +219,9 @@ def probe_etf_flow() -> ProbeResult:
     cmax = f"{max_d[:4]}-{max_d[4:6]}-{max_d[6:]}" if len(str(max_d)) >= 8 else str(max_d)
 
     notes = (
-        f"Local DuckDB fund_daily: {n:,} rows, {codes:,} ETF codes, "
+        f"ClickHouse ashare fund_daily: {n:,} rows, {codes:,} ETF codes, "
         f"{cmin} to {cmax}. "
-        f"trade_date stored as VARCHAR(YYYYMMDD) — needs cast to DATE for analysis. "
+        f"trade_date stored as String(YYYYMMDD) — needs cast to Date for analysis. "
         f"Amounts in 千元 (thousands of CNY). "
         f"Tushare fund_basic available for ETF metadata (market='E'). "
         f"For ETF share-size flow: use Tushare etf_share_size endpoint (also probed available)."
@@ -198,8 +232,8 @@ def probe_etf_flow() -> ProbeResult:
     return ProbeResult(
         condition_id=11,
         condition_name="ETF inflow heat",
-        source_checked="Local DuckDB fund_daily + Tushare fund_basic",
-        access_path="local-duckdb",
+        source_checked="ClickHouse ashare fund_daily + Tushare fund_basic",
+        access_path="local-clickhouse",
         status="available",
         coverage_years=f"2020-2026",
         coverage_min=cmin,
@@ -375,7 +409,7 @@ def probe_liquidity() -> ProbeResult:
             "Note: MLF/DR007 NOT covered by Tushare; PBOC scraping would be needed."
         ),
         blocker="",
-        human_action="Run sync of shibor + shibor_lpr to local DuckDB for persistent access.",
+        human_action="Run sync of shibor + shibor_lpr to the ClickHouse ashare warehouse for persistent access.",
     )
 
 
@@ -448,7 +482,7 @@ def probe_macro_credit() -> ProbeResult:
         notes=notes,
         blocker="",
         human_action=(
-            "Run sync of cn_m + sf_month to local DuckDB. "
+            "Run sync of cn_m + sf_month to the ClickHouse ashare warehouse. "
             "Document effective_date semantics in escape-top validation code. "
             "cn_social_financing endpoint invalid in Tushare — using sf_month verified."
         ),

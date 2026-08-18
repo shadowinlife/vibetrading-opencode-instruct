@@ -118,7 +118,7 @@ def compute_forward_drawdowns_from_df(
 
         min(close[t+1 .. t+H]) / close[t] − 1
 
-    Pure function — no DuckDB or network required.
+    Pure function — no ClickHouse or network required.
 
     Parameters
     ----------

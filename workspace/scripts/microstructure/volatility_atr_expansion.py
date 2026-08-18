@@ -35,8 +35,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .base import get_connection, pct_rank, top_pct_mask
-from .metadata import DEFAULT_DUCKDB_PATH, SSE_INDEX_CODE
+from .base import ClickHouseConnector, get_connection, pct_rank, query_dataframe, top_pct_mask
+from .metadata import SSE_INDEX_CODE
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -95,14 +95,15 @@ class VolatilitySignal:
 
 
 def _load_sse_atr_and_close(
-    duckdb_path: str = DEFAULT_DUCKDB_PATH,
+    conn: ClickHouseConnector | None = None,
 ) -> pd.DataFrame:
     """Load ATR and close for SSE Composite Index.
 
     Parameters
     ----------
-    duckdb_path : str
-        Path to the DuckDB database.
+    conn : ClickHouseConnector or None
+        Vibe-Trading ClickHouse connector.  When ``None`` (default) a
+        connector is created from ``CLICKHOUSE_*`` environment config.
 
     Returns
     -------
@@ -110,15 +111,15 @@ def _load_sse_atr_and_close(
         Columns: ``trade_date``, ``atr``, ``close``.
         Sorted by ``trade_date`` ascending.
     """
-    con = get_connection(duckdb_path, read_only=True)
-    df = con.execute(
+    if conn is None:
+        conn = get_connection()
+    df = query_dataframe(
+        conn,
         "SELECT trade_date, atr_bfq AS atr, close "
         "FROM idx_factor_pro "
-        "WHERE ts_code = ? "
+        f"WHERE ts_code = '{SSE_INDEX_CODE}' "
         "ORDER BY trade_date",
-        [SSE_INDEX_CODE],
-    ).fetchdf()
-    con.close()
+    )
 
     df["trade_date"] = pd.to_datetime(df["trade_date"])
     return df.sort_values("trade_date").reset_index(drop=True)
@@ -262,7 +263,7 @@ def _recent_concentration_elevated(
 
 
 def compute_volatility_signals(
-    duckdb_path: str = DEFAULT_DUCKDB_PATH,
+    conn: ClickHouseConnector | None = None,
     *,
     atr_rolling_days: int = DEFAULT_ATR_ROLLING_DAYS,
     atr_percentile: float = DEFAULT_ATR_PERCENTILE,
@@ -275,8 +276,9 @@ def compute_volatility_signals(
 
     Parameters
     ----------
-    duckdb_path : str
-        Path to the DuckDB database.
+    conn : ClickHouseConnector or None
+        Vibe-Trading ClickHouse connector.  When ``None`` (default) a
+        connector is created from ``CLICKHOUSE_*`` environment config.
     atr_rolling_days : int
         Rolling window for ATR percentile computation.
     atr_percentile : float
@@ -298,8 +300,11 @@ def compute_volatility_signals(
         ``joint_vol_signal``, ``concentration_elevated``,
         ``atr_after_turnover_signal``.
     """
+    if conn is None:
+        conn = get_connection()
+
     # 1. Load SSE ATR + close data
-    df = _load_sse_atr_and_close(duckdb_path)
+    df = _load_sse_atr_and_close(conn)
 
     # 2. Compute realised volatility (annualised)
     df["realized_vol"] = compute_realized_vol(df, vol_window=vol_rolling_days)
@@ -320,7 +325,7 @@ def compute_volatility_signals(
     # 6. Load concentration series and compute turnover gate
     from .tune_escape_top import _load_concentration_series  # noqa: PLC0415
 
-    df_conc = _load_concentration_series(duckdb_path)
+    df_conc = _load_concentration_series(conn)
     df = df.merge(
         df_conc[["trade_date", "top5_share"]],
         on="trade_date",
@@ -518,7 +523,7 @@ def evaluate_signal(
 
 
 def run_full_validation(
-    duckdb_path: str = DEFAULT_DUCKDB_PATH,
+    conn: ClickHouseConnector | None = None,
     *,
     atr_rolling_days: int = DEFAULT_ATR_ROLLING_DAYS,
     atr_percentile: float = DEFAULT_ATR_PERCENTILE,
@@ -533,8 +538,9 @@ def run_full_validation(
 
     Parameters
     ----------
-    duckdb_path : str
-        Path to the DuckDB database.
+    conn : ClickHouseConnector or None
+        Vibe-Trading ClickHouse connector.  When ``None`` (default) a
+        connector is created from ``CLICKHOUSE_*`` environment config.
     atr_rolling_days : int
         Rolling window for ATR percentile.
     atr_percentile : float
@@ -561,7 +567,7 @@ def run_full_validation(
 
     # 1. Compute signals
     df = compute_volatility_signals(
-        duckdb_path,
+        conn,
         atr_rolling_days=atr_rolling_days,
         atr_percentile=atr_percentile,
         vol_rolling_days=vol_rolling_days,

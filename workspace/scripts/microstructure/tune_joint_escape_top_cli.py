@@ -16,13 +16,14 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from .base import write_json
-from .metadata import DEFAULT_DUCKDB_PATH, DEFAULT_OUTPUT_DIR
+from .base import connection_available, unavailable_payload, write_json
+from .metadata import DEFAULT_OUTPUT_DIR
 from .tune_joint_escape_top import (
     _DEFAULT_HORIZONS,
     _DEFAULT_DD_THRESHOLDS,
@@ -39,12 +40,6 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m scripts.microstructure.tune_joint_escape_top_cli",
         description="Tune ensemble escape-top parameters with walk-forward OOS.",
-    )
-    parser.add_argument(
-        "--duckdb-path",
-        default=DEFAULT_DUCKDB_PATH,
-        metavar="PATH",
-        help=f"path to DuckDB file (default: {DEFAULT_DUCKDB_PATH})",
     )
     parser.add_argument(
         "--output-dir",
@@ -252,6 +247,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
+    if not connection_available():
+        print(json.dumps(unavailable_payload(), ensure_ascii=False))
+        return 0
+
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     coarse_grid = args.mode == "coarse"
@@ -265,7 +264,6 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         result = tune_joint_ensemble(
-            duckdb_path=args.duckdb_path,
             min_signals=args.min_signals,
             train_start=args.train_start,
             train_end=args.train_end,

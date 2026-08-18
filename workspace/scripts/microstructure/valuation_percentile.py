@@ -26,12 +26,18 @@ import os
 from datetime import date, datetime, timezone
 from typing import Any
 
-import duckdb
 import numpy as np
 import pandas as pd
 
-from .base import format_date, get_connection, pct_rank, write_json
-from .metadata import DEFAULT_DUCKDB_PATH, SSE_INDEX_CODE
+from .base import (
+    ClickHouseConnector,
+    format_date,
+    get_connection,
+    pct_rank,
+    query_dataframe,
+    write_json,
+)
+from .metadata import SSE_INDEX_CODE
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -119,7 +125,7 @@ def _fetch_tushare_index_dailybasic(
 
 
 def _compute_local_valuation(
-    con_or_path: duckdb.DuckDBPyConnection | str = DEFAULT_DUCKDB_PATH,
+    conn: ClickHouseConnector | None = None,
     *,
     start_date: str | None = None,
     end_date: str | None = None,
@@ -129,11 +135,8 @@ def _compute_local_valuation(
     Returns a DataFrame with columns ``trade_date, pe_w, pb_w, total_mv_sum``
     where ``pe_w`` and ``pb_w`` are market-cap-weighted averages.
     """
-    own_connection = isinstance(con_or_path, str)
-    if own_connection:
-        con = get_connection(con_or_path, read_only=True)
-    else:
-        con = con_or_path
+    if conn is None:
+        conn = get_connection()
 
     where_clauses: list[str] = ["amount > 0", "total_mv > 0"]
     if start_date is not None:
@@ -180,13 +183,9 @@ def _compute_local_valuation(
     ORDER BY trade_date
     """
 
-    try:
-        df_pe = con.execute(pe_query).fetchdf()
-        df_pb = con.execute(pb_query).fetchdf()
-        df_mv = con.execute(total_mv_query).fetchdf()
-    finally:
-        if own_connection:
-            con.close()
+    df_pe = query_dataframe(conn, pe_query)
+    df_pb = query_dataframe(conn, pb_query)
+    df_mv = query_dataframe(conn, total_mv_query)
 
     if df_pe.empty or df_pb.empty:
         raise ValueError(
@@ -276,7 +275,7 @@ def _describe_source(
 
 
 def compute_valuation_percentile(
-    con_or_path: duckdb.DuckDBPyConnection | str = DEFAULT_DUCKDB_PATH,
+    conn: ClickHouseConnector | None = None,
     *,
     index_code: str = SSE_INDEX_CODE,
     pe_lookback: int = DEFAULT_PE_PERCENTILE_LOOKBACK,
@@ -295,9 +294,9 @@ def compute_valuation_percentile(
 
     Parameters
     ----------
-    con_or_path : duckdb.DuckDBPyConnection or str
-        An open DuckDB connection or path.  Only used for the local fallback;
-        Tushare does not need a DB connection.
+    conn : ClickHouseConnector or None
+        Vibe-Trading ClickHouse connector.  Only used for the local fallback;
+        Tushare does not need a warehouse connection.
     index_code : str
         Index code for Tushare query (e.g. ``"000001.SH"``).  Ignored when
         the local fallback is used.
@@ -362,7 +361,7 @@ def compute_valuation_percentile(
 
     if df is None or df.empty:
         df = _compute_local_valuation(
-            con_or_path,
+            conn,
             start_date=start_str,
             end_date=end_str,
         )
@@ -453,7 +452,7 @@ def compute_valuation_percentile(
 
 
 def compute_valuation_series(
-    con_or_path: duckdb.DuckDBPyConnection | str = DEFAULT_DUCKDB_PATH,
+    conn: ClickHouseConnector | None = None,
     *,
     pe_lookback: int = DEFAULT_PE_PERCENTILE_LOOKBACK,
     pb_lookback: int = DEFAULT_PB_PERCENTILE_LOOKBACK,
@@ -465,14 +464,14 @@ def compute_valuation_series(
     pb_percentile`` suitable for plotting or statistical analysis.
     """
     if force_local:
-        df = _compute_local_valuation(con_or_path)
+        df = _compute_local_valuation(conn)
         df = df.rename(columns={"pe_w": "pe", "pb_w": "pb"})
         if "total_mv_sum" in df.columns:
             df = df.rename(columns={"total_mv_sum": "total_mv"})
     else:
         df = _fetch_tushare_index_dailybasic()
         if df is None or df.empty:
-            df = _compute_local_valuation(con_or_path)
+            df = _compute_local_valuation(conn)
             df = df.rename(columns={"pe_w": "pe", "pb_w": "pb"})
             if "total_mv_sum" in df.columns:
                 df = df.rename(columns={"total_mv_sum": "total_mv"})

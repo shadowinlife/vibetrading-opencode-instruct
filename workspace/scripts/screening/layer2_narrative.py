@@ -1,4 +1,8 @@
-"""Layer 2: Narrative momentum screening via DuckDB.
+"""Layer 2: Narrative momentum screening via ClickHouse.
+
+Data layer: queries run against the Vibe-Trading ClickHouse warehouse
+through ``scripts.screening.ch_client`` (env-configured ``CLICKHOUSE_*``
+connection, no hardcoded credentials).
 
 Screens stocks by:
 - Sector momentum (Shenwan L2 industry performance ranking)
@@ -11,15 +15,16 @@ Usage:
 """
 from __future__ import annotations
 
-import duckdb
 import pandas as pd
-from pathlib import Path
 
-DB_PATH = Path(__file__).resolve().parents[2] / "duckdb" / "ashare.duckdb"
+from scripts.screening.ch_client import run_query
 
 # ── SQL: Sector Momentum ──
 # Ranks Shenwan L2 industries by average pct_chg over recent N days,
-# then returns stocks in top-performing industries
+# then returns stocks in top-performing industries.
+# ClickHouse dialect note: the ORDER BY that decides the top industries
+# must live in the same SELECT as the LIMIT (ordering inside a sibling
+# CTE is not guaranteed to survive), hence the single top_industries CTE.
 SECTOR_MOMENTUM_SQL = """
 WITH industry_perf AS (
     SELECT
@@ -34,11 +39,11 @@ WITH industry_perf AS (
       AND p.trade_date <= '{trade_date}'
       AND st.ts_code IS NULL
     GROUP BY sw.l2_name
-    ORDER BY avg_pct_chg DESC
 ),
 top_industries AS (
     SELECT industry, avg_pct_chg, total_amount, stock_count
     FROM industry_perf
+    ORDER BY avg_pct_chg DESC
     LIMIT {top_n_industries}
 )
 SELECT
@@ -47,9 +52,9 @@ SELECT
     sw.l2_name AS industry,
     ti.avg_pct_chg AS industry_avg_pct_chg,
     ROUND(p.pct_chg, 2) AS pct_chg,
-    ROUND(p.amount / 10000, 2) AS amount_wan,
+    ROUND(p.amount / 10000.0, 2) AS amount_wan,
     ROUND(p.turnover_rate, 2) AS turnover_rate,
-    ROUND(p.total_mv / 10000, 2) AS total_mv_yi
+    ROUND(p.total_mv / 10000.0, 2) AS total_mv_yi
 FROM stk_factor_pro p
 JOIN stk_info si ON p.ts_code = si.ts_code
 JOIN idx_sw_member_all sw ON p.ts_code = sw.ts_code
@@ -88,8 +93,8 @@ SELECT
     r.ts_code,
     si.name,
     si.industry,
-    ROUND(r.avg_amount_20d / 10000, 2) AS avg_amount_20d_wan,
-    ROUND(h.avg_amount_60d / 10000, 2) AS avg_amount_60d_wan,
+    ROUND(r.avg_amount_20d / 10000.0, 2) AS avg_amount_20d_wan,
+    ROUND(h.avg_amount_60d / 10000.0, 2) AS avg_amount_60d_wan,
     ROUND(r.avg_amount_20d / NULLIF(h.avg_amount_60d, 0), 2) AS amount_ratio,
     ROUND(r.avg_turnover_20d, 2) AS avg_turnover_20d,
     ROUND(h.avg_turnover_60d, 2) AS avg_turnover_60d,
@@ -129,11 +134,7 @@ def screen_sector_momentum(
     if top_n_industries is not None: params["top_n_industries"] = top_n_industries
 
     sql = SECTOR_MOMENTUM_SQL.format(**params)
-    db = duckdb.connect(str(DB_PATH), read_only=True)
-    try:
-        return db.execute(sql).fetchdf()
-    finally:
-        db.close()
+    return run_query(sql)
 
 
 def screen_volume_momentum(
@@ -152,11 +153,7 @@ def screen_volume_momentum(
     if turnover_ratio_min is not None: params["turnover_ratio_min"] = turnover_ratio_min
 
     sql = VOLUME_MOMENTUM_SQL.format(**params)
-    db = duckdb.connect(str(DB_PATH), read_only=True)
-    try:
-        return db.execute(sql).fetchdf()
-    finally:
-        db.close()
+    return run_query(sql)
 
 
 def screen_narrative(

@@ -36,7 +36,7 @@ class Feasibility(str, Enum):
 
 class SourceTier(str, Enum):
     """Ordered hierarchy: prefer lower enum values."""
-    LOCAL_DUCKDB = "local-duckdb"           # already in DuckDB, highest trust
+    LOCAL_WAREHOUSE = "local-warehouse"      # already in the ClickHouse ashare warehouse, highest trust
     OFFICIAL_API = "official-api"           # Tushare or other structured API
     OFFICIAL_PUBLICATION = "official-pub"   # gov/regulator published data (scrape-able)
     PAID_VENDOR = "paid-vendor"             # Wind/Bloomberg/Choice/CSMAR
@@ -79,7 +79,7 @@ class AccessHint:
     """How to access this source in this project."""
     tushare_endpoint: Optional[str] = None   # e.g. "moneyflow_hsgt"
     tushare_method: str = "query"            # "query" or named method
-    duckdb_table: Optional[str] = None       # e.g. "stk_moneyflow"
+    warehouse_table: Optional[str] = None    # e.g. "stk_moneyflow" (ClickHouse ashare database)
     doc_url: Optional[str] = None            # Tushare doc URL or official ref
     env_requirements: list[str] = field(default_factory=list)  # ["TUSHARE_TOKEN=120+"]
     special_notes: list[str] = field(default_factory=list)
@@ -161,7 +161,7 @@ def build_source_matrix() -> list[SourceEntry]:
         access_hint=AccessHint(
             tushare_endpoint="moneyflow_hsgt",
             tushare_method="query",
-            duckdb_table=None,  # not yet synced
+            warehouse_table=None,  # not yet synced
             doc_url="https://tushare.pro/document/2?doc_id=47",
             env_requirements=["TUSHARE_TOKEN"],
             special_notes=[
@@ -219,10 +219,10 @@ def build_source_matrix() -> list[SourceEntry]:
     matrix.append(SourceEntry(
         condition_id=11,
         condition_name="ETF inflow heat",
-        source_name="Tushare fund_daily (ETF日线行情) — already partially synced to DuckDB",
-        access_method="Local DuckDB: fund_daily table, or Tushare pro.query('fund_daily')",
+        source_name="Tushare fund_daily (ETF日线行情) — already synced to the ClickHouse warehouse",
+        access_method="ClickHouse ashare: fund_daily table, or Tushare pro.query('fund_daily')",
         feasibility=Feasibility.AUTOMATABLE_NOW,
-        tier=SourceTier.LOCAL_DUCKDB,
+        tier=SourceTier.LOCAL_WAREHOUSE,
         frequency=Frequency.DAILY,
         data_lag=DataLag.T1,
         key_fields=[
@@ -236,11 +236,11 @@ def build_source_matrix() -> list[SourceEntry]:
         access_hint=AccessHint(
             tushare_endpoint="fund_daily",
             tushare_method="query",
-            duckdb_table="fund_daily",
+            warehouse_table="fund_daily",
             doc_url="https://tushare.pro/document/2?doc_id=127",
             env_requirements=["TUSHARE_TOKEN"],
             special_notes=[
-                "fund_daily IS in the local DuckDB index (_index.md lists it under fund module)",
+                "fund_daily IS in the ClickHouse ashare warehouse (schema/clickhouse/ashare__fund_daily.sql)",
                 "Current fund_daily table may need sync to catch up to latest data",
                 "No pre-computed technical indicators; compute locally if needed",
             ],
@@ -262,7 +262,7 @@ def build_source_matrix() -> list[SourceEntry]:
                 caveats=(
                     "Provides ETF share count and NAV; useful for computing aggregate "
                     "inflow/redemption in shares. Requires Tushare basic-tier permissions. "
-                    "Not yet synced to local DuckDB."
+                    "Not yet synced to the ClickHouse warehouse."
                 ),
             ),
             FallbackSource(
@@ -277,7 +277,7 @@ def build_source_matrix() -> list[SourceEntry]:
             ),
         ],
         rationale=(
-            "fund_daily is already listed in the project DuckDB index. "
+            "fund_daily is already in the project ClickHouse warehouse (ashare database). "
             "Its OHLCV fields (close, vol, amount) can directly support ETF turnover heat "
             "metrics. Classified automatable-now because the table exists locally, "
             "needs only an incremental sync. For share-size/size-related heat, "
@@ -312,7 +312,7 @@ def build_source_matrix() -> list[SourceEntry]:
         access_hint=AccessHint(
             tushare_endpoint="fund_nav",
             tushare_method="query",
-            duckdb_table=None,
+            warehouse_table=None,
             doc_url="https://tushare.pro/document/2?doc_id=19",
             env_requirements=["TUSHARE_TOKEN"],
             special_notes=[
@@ -404,7 +404,7 @@ def build_source_matrix() -> list[SourceEntry]:
         access_hint=AccessHint(
             tushare_endpoint="shibor",
             tushare_method="query",
-            duckdb_table=None,
+            warehouse_table=None,
             doc_url="https://tushare.pro/document/2?doc_id=305",
             env_requirements=["TUSHARE_TOKEN"],
             special_notes=[
@@ -447,7 +447,7 @@ def build_source_matrix() -> list[SourceEntry]:
         ),
         data_start_estimate="2006-10 (Shibor launch)",
         human_action_required=[
-            "Initiate sync of shibor to local DuckDB",
+            "Initiate sync of shibor to the ClickHouse warehouse",
             "For MLF/DR007: decide if Shibor proxy is sufficient before investing in scraping",
         ],
     ))
@@ -474,7 +474,7 @@ def build_source_matrix() -> list[SourceEntry]:
         access_hint=AccessHint(
             tushare_endpoint="cn_m",
             tushare_method="query",
-            duckdb_table=None,
+            warehouse_table=None,
             doc_url="https://tushare.pro/document/2?doc_id=159",
             env_requirements=["TUSHARE_TOKEN", "Possibly 120+ points"],
             special_notes=[
@@ -557,7 +557,7 @@ def build_source_matrix() -> list[SourceEntry]:
         access_hint=AccessHint(
             tushare_endpoint="opt_daily",
             tushare_method="query",
-            duckdb_table=None,
+            warehouse_table=None,
             doc_url="https://tushare.pro/document/2?doc_id=156",
             env_requirements=["TUSHARE_TOKEN", "Possibly 2000+ points"],
             special_notes=[
@@ -657,7 +657,7 @@ def build_source_matrix() -> list[SourceEntry]:
         access_hint=AccessHint(
             tushare_endpoint=None,  # Tushare does NOT have this endpoint
             tushare_method="query",
-            duckdb_table=None,
+            warehouse_table=None,
             doc_url="http://www.chinaclear.cn/zdjs/tjyb/center_tjbg.shtml",
             env_requirements=[],
             special_notes=[
@@ -830,7 +830,7 @@ if __name__ == "__main__":
                 "access_hint": {
                     "tushare_endpoint": e.access_hint.tushare_endpoint,
                     "tushare_method": e.access_hint.tushare_method,
-                    "duckdb_table": e.access_hint.duckdb_table,
+                    "warehouse_table": e.access_hint.warehouse_table,
                     "doc_url": e.access_hint.doc_url,
                     "env_requirements": e.access_hint.env_requirements,
                     "special_notes": e.access_hint.special_notes,
@@ -912,7 +912,7 @@ if __name__ == "__main__":
         md_lines.append(f"| **Frequency** | {e.frequency.value} |")
         md_lines.append(f"| **Data Lag** | {e.data_lag.value} |")
         md_lines.append(f"| **Tushare Endpoint** | `{e.access_hint.tushare_endpoint or 'N/A'}` |")
-        md_lines.append(f"| **Local DuckDB** | `{e.access_hint.duckdb_table or 'Not synced'}` |")
+        md_lines.append(f"| **ClickHouse (ashare)** | `{e.access_hint.warehouse_table or 'Not synced'}` |")
         md_lines.append(f"| **Est. Data Start** | {e.data_start_estimate} |")
         md_lines.append("")
 

@@ -5,8 +5,8 @@ On each trade date, ranks all stocks by daily turnover (``amount``),
 takes the top ``ceil(stock_count * TOP_PCT)`` stocks, and computes the share
 of their combined turnover in total market turnover.
 
-The core function ``compute_concentration`` is a pure-ish API: it accepts a
-DuckDB connection (or path) and an optional date window, and returns a
+The core function ``compute_concentration`` is a pure-ish API: it accepts an
+optional ClickHouse connector and an optional date window, and returns a
 structured dictionary with the latest value, historical extremes, percentile
 rank, threshold-hit statistics, and the raw daily series.
 """
@@ -16,11 +16,16 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
-import duckdb
 import pandas as pd
 
-from .base import format_date, get_connection
-from .metadata import CONCENTRATION_TOP_PCT, DEFAULT_DUCKDB_PATH
+from .base import (
+    ClickHouseConnector,
+    format_date,
+    get_connection,
+    query_dataframe,
+    validate_trade_date,
+)
+from .metadata import CONCENTRATION_TOP_PCT
 
 # ---------------------------------------------------------------------------
 # Public result type
@@ -55,12 +60,19 @@ def _build_query(
     start_date: str | None = None,
     end_date: str | None = None,
 ) -> str:
-    """Build the parameterised DuckDB query for daily concentration.
+    """Build the ClickHouse query for daily concentration.
 
-    The query is parameterised locally because ``duckdb.connect`` with
-    ``read_only=True`` does not support ``execute(sql, params)`` with
-    expression parameters.  Dates and the percentage threshold are
-    compiled into the SQL string with input validation.
+    Dates and the percentage threshold are compiled into the SQL string with
+    input validation (dates validated by the caller via
+    :func:`validate_trade_date`, ``top_pct`` range-checked below).
+
+    Notes on the ClickHouse dialect
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    * ``stk_factor_pro.amount`` is turnover in thousands of CNY (千元).
+    * Window functions (``ROW_NUMBER``/``COUNT``/``SUM`` ``OVER``) are
+      supported natively by ClickHouse.
+    * ``CEIL`` and ``CAST(... AS BIGINT)`` (alias of ``Int64``) are used
+      as-is; both are valid ClickHouse spellings.
     """
     if not (0 < top_pct <= 100):
         raise ValueError(f"top_pct must be in (0, 100], got {top_pct}")
@@ -69,9 +81,9 @@ def _build_query(
 
     where_clauses: list[str] = []
     if start_date is not None:
-        where_clauses.append(f"trade_date >= '{start_date}'")
+        where_clauses.append(f"trade_date >= '{validate_trade_date(start_date, name='start_date')}'")
     if end_date is not None:
-        where_clauses.append(f"trade_date <= '{end_date}'")
+        where_clauses.append(f"trade_date <= '{validate_trade_date(end_date, name='end_date')}'")
     where_line = f"AND {' AND '.join(where_clauses)}" if where_clauses else ""
 
     return f"""
@@ -110,7 +122,7 @@ def _build_query(
 
 
 def compute_concentration(
-    con_or_path: duckdb.DuckDBPyConnection | str = DEFAULT_DUCKDB_PATH,
+    conn: ClickHouseConnector | None = None,
     *,
     top_pct: float = CONCENTRATION_TOP_PCT,
     start_date: str | date | None = None,
@@ -120,10 +132,9 @@ def compute_concentration(
 
     Parameters
     ----------
-    con_or_path : duckdb.DuckDBPyConnection or str
-        An open DuckDB connection *or* a path to a ``.duckdb`` file.
-        When a path is given a **read-only** connection is opened and
-        automatically closed after the query.
+    conn : ClickHouseConnector or None
+        Vibe-Trading ClickHouse connector.  When ``None`` (default) a
+        connector is created from ``CLICKHOUSE_*`` environment config.
     top_pct : float
         Percentage of stocks to include in the top group (default 5.0).
     start_date : str or date, optional
@@ -154,22 +165,15 @@ def compute_concentration(
     """
     start_str, end_str = _validate_date_window(start_date, end_date)
 
-    own_connection = isinstance(con_or_path, str)
-    if own_connection:
-        con = get_connection(con_or_path, read_only=True)
-    else:
-        con = con_or_path
+    if conn is None:
+        conn = get_connection()
 
-    try:
-        query = _build_query(
-            top_pct=top_pct,
-            start_date=start_str,
-            end_date=end_str,
-        )
-        df = con.execute(query).fetchdf()
-    finally:
-        if own_connection:
-            con.close()
+    query = _build_query(
+        top_pct=top_pct,
+        start_date=start_str,
+        end_date=end_str,
+    )
+    df = query_dataframe(conn, query)
 
     if df.empty:
         raise ValueError(

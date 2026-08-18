@@ -31,13 +31,12 @@ import datetime as _dt
 from dataclasses import dataclass, field
 from typing import Any
 
-import duckdb
 import numpy as np
 import pandas as pd
 
-from .base import format_date, get_connection
+from .base import ClickHouseConnector, format_date, get_connection
 from .ensemble import ConditionResult, EnsembleConfig, resolve_ensemble
-from .metadata import CONCENTRATION_TOP_PCT, DEFAULT_DUCKDB_PATH, SSE_INDEX_CODE
+from .metadata import CONCENTRATION_TOP_PCT, SSE_INDEX_CODE
 from .tune_escape_top import (
     _load_concentration_series,
     _load_margin_divergence_series,
@@ -66,7 +65,7 @@ _SENS_PERTURB = 0.10
 
 
 def load_validated_condition_signals(
-    duckdb_path: str = DEFAULT_DUCKDB_PATH,
+    conn: ClickHouseConnector | None = None,
     *,
     divergence_lookback_days: int = 40,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -74,8 +73,9 @@ def load_validated_condition_signals(
 
     Parameters
     ----------
-    duckdb_path : str
-        Path to DuckDB.
+    conn : ClickHouseConnector or None
+        Vibe-Trading ClickHouse connector.  When ``None`` (default) a
+        connector is created from ``CLICKHOUSE_*`` environment config.
     divergence_lookback_days : int
         Lookback window for margin/SSE divergence (default 40).
 
@@ -85,16 +85,19 @@ def load_validated_condition_signals(
         (margin_divergence_df, volatility_df).  Each contains at least
         ``trade_date`` and ``signal`` columns.
     """
+    if conn is None:
+        conn = get_connection()
+
     # ── Condition #2: margin divergence ─────────────────────────────────
     df_margin = _load_margin_divergence_series(
-        duckdb_path, divergence_lookback_days=divergence_lookback_days
+        conn, divergence_lookback_days=divergence_lookback_days
     )
     df_margin["signal"] = df_margin["divergence_hit"]
 
     # ── Condition #5: volatility / ATR expansion ────────────────────────
     from .volatility_atr_expansion import compute_volatility_signals  # noqa: PLC0415
 
-    df_vol = compute_volatility_signals(duckdb_path)
+    df_vol = compute_volatility_signals(conn)
     df_vol["signal"] = df_vol["joint_vol_signal"]
 
     return (
@@ -274,7 +277,7 @@ def _evaluate_config(
 
 
 def compute_baseline(
-    duckdb_path: str = DEFAULT_DUCKDB_PATH,
+    conn: ClickHouseConnector | None = None,
     *,
     horizons: list[int] | None = None,
     dd_thresholds: dict[int, float] | None = None,
@@ -295,16 +298,19 @@ def compute_baseline(
     if dd_thresholds is None:
         dd_thresholds = _DEFAULT_DD_THRESHOLDS
 
-    df_sse = compute_forward_drawdowns(duckdb_path, horizons=horizons)
-    df_conc = _load_concentration_series(duckdb_path)
+    if conn is None:
+        conn = get_connection()
+
+    df_sse = compute_forward_drawdowns(conn, horizons=horizons)
+    df_conc = _load_concentration_series(conn)
     df_div = _load_margin_divergence_series(
-        duckdb_path, divergence_lookback_days=div_lookback
+        conn, divergence_lookback_days=div_lookback
     )
 
     from .tune_escape_top import compute_signal_series  # noqa: PLC0415
 
     df_sig = compute_signal_series(
-        duckdb_path,
+        conn,
         concentration_threshold=conc_threshold,
         concentration_top_pct=CONCENTRATION_TOP_PCT,
         df_conc=df_conc,
@@ -641,7 +647,7 @@ def _sensitivity_perturb(
 
 
 def tune_joint_ensemble(
-    duckdb_path: str = DEFAULT_DUCKDB_PATH,
+    conn: ClickHouseConnector | None = None,
     *,
     horizons: list[int] | None = None,
     dd_thresholds: dict[int, float] | None = None,
@@ -657,8 +663,9 @@ def tune_joint_ensemble(
 
     Parameters
     ----------
-    duckdb_path : str
-        Path to DuckDB.
+    conn : ClickHouseConnector or None
+        Vibe-Trading ClickHouse connector.  When ``None`` (default) a
+        connector is created from ``CLICKHOUSE_*`` environment config.
     horizons : list[int] or None
         Forward DD horizons (default [20, 60, 120]).
     dd_thresholds : dict[int, float] or None
@@ -683,15 +690,18 @@ def tune_joint_ensemble(
     if dd_thresholds is None:
         dd_thresholds = _DEFAULT_DD_THRESHOLDS
 
+    if conn is None:
+        conn = get_connection()
+
     # ── 1. Load data ──────────────────────────────────────────────────────
     if verbose:
         print("[tune_joint] Loading validated condition signals …", flush=True)
-    df_margin, df_vol = load_validated_condition_signals(duckdb_path)
+    df_margin, df_vol = load_validated_condition_signals(conn)
     df_aligned = _align_signals(df_margin, df_vol)
 
     if verbose:
         print("[tune_joint] Computing forward drawdowns …", flush=True)
-    df_fwd = compute_forward_drawdowns(duckdb_path, horizons=horizons)
+    df_fwd = compute_forward_drawdowns(conn, horizons=horizons)
 
     # ── 2. Train/test split ───────────────────────────────────────────────
     if verbose:
@@ -772,7 +782,7 @@ def tune_joint_ensemble(
     if verbose:
         print("[tune_joint] Computing baseline …", flush=True)
     baseline = compute_baseline(
-        duckdb_path,
+        conn,
         horizons=horizons,
         dd_thresholds=dd_thresholds,
     )

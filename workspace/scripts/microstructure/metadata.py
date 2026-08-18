@@ -1,7 +1,9 @@
 """
 Shared constants for market microstructure indicators.
 
-Values are tuned for A-share daily-frequency analysis using local DuckDB data.
+Values are tuned for A-share daily-frequency analysis against the
+Vibe-Trading ClickHouse warehouse (connection configured exclusively via
+``CLICKHOUSE_*`` environment variables — no hardcoded endpoints here).
 """
 
 from pathlib import Path
@@ -9,8 +11,6 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 # Path defaults
 # ---------------------------------------------------------------------------
-
-DEFAULT_DUCKDB_PATH: str = "./duckdb/ashare.duckdb"
 
 # Output directory (absolute, resolved relative to repo root).
 PROJECT_ROOT: Path = Path(__file__).resolve().parents[2]

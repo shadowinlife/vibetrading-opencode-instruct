@@ -1,6 +1,15 @@
 """
 Shared utilities for microstructure indicator modules.
 
+Data layer
+----------
+All market data is read through the Vibe-Trading ClickHouse connector
+(``src.clickhouse_connector.ClickHouseConnector``).  Connection settings
+come **exclusively** from environment variables (``CLICKHOUSE_HOST``,
+``CLICKHOUSE_PORT``, ``CLICKHOUSE_USER``, ``CLICKHOUSE_PASSWORD``,
+``CLICKHOUSE_DATABASE``) via the VT ``DataConfig`` defaults — never
+hardcode connection parameters in this package.
+
 All functions are stateless and can be reused by any indicator script
 without side effects.
 """
@@ -8,33 +17,125 @@ without side effects.
 from __future__ import annotations
 
 import json
+import re
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-import duckdb
 import pandas as pd
 
+from src.clickhouse_connector import ClickHouseConnector
 
-# ── DuckDB connection helper ────────────────────────────────────────────────
+__all__ = [
+    "ClickHouseConnector",
+    "get_connection",
+    "connection_available",
+    "query_dataframe",
+    "unavailable_payload",
+    "validate_trade_date",
+    "write_json",
+    "format_date",
+    "pct_rank",
+    "top_pct_mask",
+    "rolling_zscore",
+]
+
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
-def get_connection(duckdb_path: str, *, read_only: bool = True) -> duckdb.DuckDBPyConnection:
-    """Open (and return) a DuckDB connection.
+# ── ClickHouse connection helpers ────────────────────────────────────────────
 
-    Parameters
-    ----------
-    duckdb_path : str
-        Path to the ``.duckdb`` file.
-    read_only : bool
-        If ``True`` (default), opens the database in read-only mode.
+
+def get_connection() -> ClickHouseConnector:
+    """Return a Vibe-Trading ClickHouse connector.
+
+    Connection parameters are resolved from the ``CLICKHOUSE_*``
+    environment variables (VT ``DataConfig`` defaults apply); no path
+    argument exists because the legacy file-based warehouse path has been retired.
 
     Returns
     -------
-    duckdb.DuckDBPyConnection
-        An open connection.  The caller is responsible for closing it.
+    ClickHouseConnector
+        Connector to the configured ClickHouse instance.  The connector
+        is a stateless HTTP client — no close is required.
     """
-    return duckdb.connect(duckdb_path, read_only=read_only)
+    return ClickHouseConnector()
+
+
+def connection_available() -> bool:
+    """Return ``True`` when the configured ClickHouse instance is reachable.
+
+    Wraps ``ClickHouseConnector.health_check()``; never raises.
+    """
+    try:
+        return get_connection().health_check()
+    except Exception:  # noqa: BLE001 - degradation probe must never raise
+        return False
+
+
+def unavailable_payload(reason: str = "ClickHouse unreachable") -> dict[str, Any]:
+    """Standard degradation payload emitted by CLIs when ClickHouse is down.
+
+    Mirrors the data-warehouse skill convention: CLIs print this JSON
+    object and exit 0 instead of raising a raw traceback.
+    """
+    return {"available": False, "reason": reason}
+
+
+def query_dataframe(
+    conn: ClickHouseConnector,
+    sql: str,
+    params: dict[str, str] | None = None,
+) -> pd.DataFrame:
+    """Execute *sql* via the ClickHouse connector and return a typed frame.
+
+    The ClickHouse HTTP interface (``JSONCompact``) serialises 64-bit
+    integers and decimals as strings.  To preserve the typed semantics the
+    indicator code relies on, every object column whose non-empty values
+    all parse as numbers is coerced to a numeric dtype.  Date-like and
+    text columns (e.g. ``trade_date``, ``ts_code``) are left as strings.
+
+    Parameters
+    ----------
+    conn : ClickHouseConnector
+        Connector obtained from :func:`get_connection`.
+    sql : str
+        ClickHouse SQL statement.
+    params : dict[str, str] or None
+        Optional ClickHouse parameter bindings (``{"param_name": value}``)
+        for ``{name:Type}`` placeholders in *sql*.
+
+    Returns
+    -------
+    pd.DataFrame
+        Query result with numeric columns coerced from string encoding.
+    """
+    df = conn.query(sql, params=params)
+    if df.empty:
+        return df
+    for col in df.columns:
+        series = df[col]
+        if series.dtype != object:
+            continue
+        stripped = series.astype("string").str.strip()
+        numeric = pd.to_numeric(stripped, errors="coerce")
+        non_empty = stripped.notna() & (stripped != "")
+        if non_empty.any() and numeric[non_empty].notna().all():
+            df[col] = numeric
+    return df
+
+
+def validate_trade_date(value: str, *, name: str = "date") -> str:
+    """Validate a ``YYYY-MM-DD`` date string before SQL interpolation.
+
+    Raises
+    ------
+    ValueError
+        When *value* does not match the strict ``YYYY-MM-DD`` shape.
+    """
+    if not isinstance(value, str) or not _DATE_RE.match(value):
+        raise ValueError(f"{name} must be YYYY-MM-DD, got {value!r}")
+    return value
 
 
 # ── JSON writer ─────────────────────────────────────────────────────────────

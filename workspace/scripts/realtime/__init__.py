@@ -1,7 +1,8 @@
-"""Realtime quote adapter package for multi-market data retrieval.
+"""Realtime quote adapter package backed by the Vibe-Trading data federation.
 
-Provides normalized quote data from various providers (akshare, yfinance, etc.)
-with dependency injection for testability.
+Provides normalized quote data through Vibe-Trading's market-data
+federation (``src.market_data.fetch_market_data``) with retry, freshness
+validation, and dependency injection for testability.
 
 Usage::
 

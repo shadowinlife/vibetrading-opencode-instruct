@@ -15,11 +15,11 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
+from .base import ClickHouseConnector, get_connection, query_dataframe, validate_trade_date
 from .concentration import compute_concentration
 from .margin_buy_vs_sse import compute_margin_buy_vs_sse
 from .metadata import (
     CONCENTRATION_TOP_PCT,
-    DEFAULT_DUCKDB_PATH,
     ESCAPE_TOP_DEFAULT_CONCENTRATION_THRESHOLD,
     ESCAPE_TOP_DEFAULT_DIVERGENCE_LOOKBACK_DAYS,
 )
@@ -32,7 +32,7 @@ WarningLevel = Literal["RED", "YELLOW", "GREEN"]
 
 
 def compute_escape_warning(
-    duckdb_path: str = DEFAULT_DUCKDB_PATH,
+    conn: ClickHouseConnector | None = None,
     *,
     concentration_threshold: float = ESCAPE_TOP_DEFAULT_CONCENTRATION_THRESHOLD,
     divergence_lookback_days: int = ESCAPE_TOP_DEFAULT_DIVERGENCE_LOOKBACK_DAYS,
@@ -47,8 +47,9 @@ def compute_escape_warning(
 
     Parameters
     ----------
-    duckdb_path : str
-        Path to the DuckDB database.
+    conn : ClickHouseConnector or None
+        Vibe-Trading ClickHouse connector.  When ``None`` (default) a
+        connector is created from ``CLICKHOUSE_*`` environment config.
     concentration_threshold : float
         Top-N% turnover share that triggers a concentration hit (default 0.45).
     divergence_lookback_days : int
@@ -79,14 +80,17 @@ def compute_escape_warning(
     """
     _validate_joint_mode(joint_mode)
 
+    if conn is None:
+        conn = get_connection()
+
     conc = compute_concentration(
-        duckdb_path,
+        conn,
         top_pct=concentration_top_pct,
         start_date=start_date,
         end_date=end_date,
     )
     div = compute_margin_buy_vs_sse(
-        duckdb_path,
+        conn,
         start_date=start_date,
         end_date=end_date,
         divergence_lookback_days=divergence_lookback_days,
@@ -103,11 +107,9 @@ def compute_escape_warning(
         if divergence_hit:
             temporal_divergence_present = True
         else:
-            import duckdb
-            con = duckdb.connect(duckdb_path, read_only=True)
             lb = divergence_lookback_days
-            latest_dt = conc["latest_trade_date"]
-            result = con.execute(f"""
+            latest_dt = validate_trade_date(conc["latest_trade_date"], name="latest_trade_date")
+            temporal_df = query_dataframe(conn, f"""
                 WITH daily AS (
                     SELECT m.trade_date,
                            SUM(m.rzye) AS rzye,
@@ -132,11 +134,12 @@ def compute_escape_warning(
                     ORDER BY trade_date DESC
                     LIMIT {temporal_window_days}
                 )
-                SELECT MAX(CASE WHEN rzye_chg > 0 AND ratio_chg < 0 THEN 1 ELSE 0 END)
+                SELECT MAX(CASE WHEN rzye_chg > 0 AND ratio_chg < 0 THEN 1 ELSE 0 END) AS hit
                 FROM recent
-            """).fetchone()
-            con.close()
-            temporal_divergence_present = bool(result and result[0] == 1)
+            """)
+            temporal_divergence_present = bool(
+                not temporal_df.empty and temporal_df.iloc[0, 0] == 1
+            )
         if temporal_divergence_present:
             divergence_hit = True
 

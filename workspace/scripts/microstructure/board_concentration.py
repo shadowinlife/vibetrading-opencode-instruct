@@ -28,15 +28,18 @@ from __future__ import annotations
 
 from typing import Any
 
-import duckdb
 import pandas as pd
 
-from .base import format_date, get_connection
+from .base import (
+    ClickHouseConnector,
+    get_connection,
+    query_dataframe,
+    validate_trade_date,
+)
 from .metadata import (
     BOARD_CLASSIFY_RULES,
     BOARD_INDEX_MAP,
     CONCENTRATION_TOP_PCT,
-    DEFAULT_DUCKDB_PATH,
 )
 
 # ---------------------------------------------------------------------------
@@ -63,8 +66,9 @@ def _classify_board(ts_code: str) -> str:
 
 
 def _build_board_query(trade_date: str, top_pct: float) -> str:
-    """Build DuckDB query for board-level concentration on a single date."""
+    """Build ClickHouse query for board-level concentration on a single date."""
     pct = top_pct / 100.0
+    trade_date = validate_trade_date(trade_date, name="trade_date")
     return f"""
     WITH base AS (
         SELECT
@@ -104,7 +108,7 @@ def _build_board_query(trade_date: str, top_pct: float) -> str:
 
 
 def compute_board_concentration(
-    con_or_path: duckdb.DuckDBPyConnection | str = DEFAULT_DUCKDB_PATH,
+    conn: ClickHouseConnector | None = None,
     *,
     trade_date: str,
     top_pct: float = CONCENTRATION_TOP_PCT,
@@ -113,8 +117,9 @@ def compute_board_concentration(
 
     Parameters
     ----------
-    con_or_path : duckdb.DuckDBPyConnection or str
-        DuckDB connection or path.
+    conn : ClickHouseConnector or None
+        Vibe-Trading ClickHouse connector.  When ``None`` (default) a
+        connector is created from ``CLICKHOUSE_*`` environment config.
     trade_date : str
         Target trade date in ``YYYY-MM-DD`` format.
     top_pct : float
@@ -136,18 +141,11 @@ def compute_board_concentration(
           the recommended tracking index
         * ``anchor_rationale`` — human-readable explanation
     """
-    own_connection = isinstance(con_or_path, str)
-    if own_connection:
-        con = get_connection(con_or_path, read_only=True)
-    else:
-        con = con_or_path
+    if conn is None:
+        conn = get_connection()
 
-    try:
-        query = _build_board_query(trade_date, top_pct)
-        df = con.execute(query).fetchdf()
-    finally:
-        if own_connection:
-            con.close()
+    query = _build_board_query(trade_date, top_pct)
+    df = query_dataframe(conn, query)
 
     if df.empty:
         raise ValueError(

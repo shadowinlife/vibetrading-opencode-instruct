@@ -1,9 +1,10 @@
 """
 Effective-date audit across ALL data sources used by escape-top conditions.
 
-Performs look-ahead and effective-date analysis for every source (local DuckDB
-+ external Tushare), classifying date semantics, computing max-lag days, and
-flagging sources that require calendar-alignment enforcement.
+Performs look-ahead and effective-date analysis for every source (ClickHouse
+ashare warehouse + external Tushare), classifying date semantics, computing
+max-lag days, and flagging sources that require calendar-alignment
+enforcement.
 
 Key principles:
   - **trade_date** sources follow trade_calendar → T+0/T+1 max lag
@@ -14,7 +15,7 @@ Key principles:
 Usage::
 
     python -m scripts.microstructure.effective_date_audit
-    python -m scripts.microstructure.effective_date_audit --duckdb-path ./duckdb/ashare.duckdb
+    python -m scripts.microstructure.effective_date_audit [output_dir]
 """
 
 from __future__ import annotations
@@ -22,13 +23,20 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass, asdict
-from datetime import date, timedelta
+from datetime import date
 from enum import Enum
-from pathlib import Path
 from typing import Any, List, Optional
 
-import duckdb
+import pandas as pd
 
+from scripts.microstructure.base import (
+    ClickHouseConnector,
+    connection_available,
+    get_connection,
+    query_dataframe,
+    unavailable_payload,
+    validate_trade_date,
+)
 from scripts.microstructure.source_registry import (
     ExternalSource,
     LocalSource,
@@ -91,7 +99,7 @@ class SourceCategory(Enum):
     """Static reference tables (trade_calendar, stock_basic, index_basic)."""
 
     EXTERNAL_API = "external_api"
-    """External Tushare API endpoints not synced to DuckDB."""
+    """External Tushare API endpoints not synced to the ClickHouse warehouse."""
 
 
 # ── Audit result dataclass ─────────────────────────────────────────────────
@@ -135,7 +143,7 @@ class SourceAuditRecord:
     """Human-readable description of release cadence."""
 
     is_local: bool
-    """Whether this source lives in local DuckDB."""
+    """Whether this source lives in the ClickHouse ashare warehouse."""
 
     has_lookahead_risk: bool
     """True when period_date ≠ effective_date (monthly/quarterly sources)."""
@@ -187,43 +195,60 @@ class EffectiveDateAudit:
 class EffectiveDateAuditor:
     """Audits date semantics and effective-date compliance across all sources.
 
-    Queries DuckDB for actual data freshness, cross-references with
-    trade_calendar, and classifies look-ahead risk per source.
+    Queries the ClickHouse ashare warehouse for actual data freshness,
+    cross-references with trade_calendar, and classifies look-ahead risk
+    per source.  Connection settings come exclusively from ``CLICKHOUSE_*``
+    environment variables.
     """
 
-    def __init__(self, duckdb_path: str = "./duckdb/ashare.duckdb"):
-        self.duckdb_path = duckdb_path
-        self._con: Optional[duckdb.DuckDBPyConnection] = None
+    def __init__(self, conn: ClickHouseConnector | None = None):
+        self._con: Optional[ClickHouseConnector] = conn
         self._calendar_cache: Optional[dict[str, Any]] = None
 
     # ── connection management ──────────────────────────────────────────
 
     @property
-    def con(self) -> duckdb.DuckDBPyConnection:
+    def con(self) -> ClickHouseConnector:
         if self._con is None:
-            self._con = duckdb.connect(self.duckdb_path, read_only=True)
+            self._con = get_connection()
         return self._con
 
     def close(self) -> None:
-        if self._con is not None:
-            self._con.close()
-            self._con = None
+        # The ClickHouse HTTP connector is stateless — nothing to close.
+        self._con = None
 
     # ── calendar helpers ───────────────────────────────────────────────
 
     def _get_calendar(self) -> dict[str, Any]:
-        """Load and cache trade calendar metadata."""
+        """Load and cache trade calendar metadata.
+
+        ``trade_calendar.cal_date`` is a ``String`` column; the comparison
+        is written against both ``YYYY-MM-DD`` and ``YYYYMMDD`` encodings
+        so the audit works regardless of which format the warehouse sync
+        stores.
+        """
         if self._calendar_cache is not None:
             return self._calendar_cache
 
-        latest_trade = self.con.execute(
-            "SELECT MAX(cal_date) FROM trade_calendar "
-            "WHERE is_open=1 AND cal_date <= strftime(CURRENT_DATE, '%Y%m%d')"
-        ).fetchone()[0]
+        latest_df = query_dataframe(self.con, """
+            SELECT MAX(cal_date) AS latest
+            FROM trade_calendar
+            WHERE is_open = 1
+              AND (cal_date <= toString(today())
+                   OR cal_date <= formatDateTime(today(), '%Y%m%d'))
+        """)
+        latest_raw = latest_df.iloc[0, 0] if not latest_df.empty else None
+        latest_trade = str(latest_raw) if latest_raw else None
+        if latest_trade and len(latest_trade) == 8 and latest_trade.isdigit():
+            latest_trade = (
+                f"{latest_trade[:4]}-{latest_trade[4:6]}-{latest_trade[6:]}"
+            )
 
-        trading_days = self.con.execute(
-            "SELECT COUNT(*) FROM trade_calendar WHERE is_open=1"
-        ).fetchone()[0]
+        count_df = query_dataframe(
+            self.con,
+            "SELECT COUNT(*) AS n FROM trade_calendar WHERE is_open = 1",
+        )
+        trading_days = int(count_df.iloc[0, 0]) if not count_df.empty else 0
 
         self._calendar_cache = {
             "latest_trading_day": latest_trade,
@@ -232,12 +257,24 @@ class EffectiveDateAuditor:
         return self._calendar_cache
 
     def _trading_days_between(self, from_date: str, to_date: str) -> int:
-        """Count trading days between two calendar dates (inclusive of both)."""
-        return self.con.execute(
-            "SELECT COUNT(*) FROM trade_calendar "
-            "WHERE is_open=1 AND cal_date >= ? AND cal_date <= ?",
-            [from_date, to_date],
-        ).fetchone()[0]
+        """Count trading days between two calendar dates (inclusive of both).
+
+        Accepts ``YYYY-MM-DD`` dates; the comparison covers both
+        ``YYYY-MM-DD`` and ``YYYYMMDD`` ``cal_date`` encodings (see
+        :meth:`_get_calendar`).
+        """
+        from_iso = validate_trade_date(from_date, name="from_date")
+        to_iso = validate_trade_date(to_date, name="to_date")
+        from_compact = from_iso.replace("-", "")
+        to_compact = to_iso.replace("-", "")
+        df = query_dataframe(self.con, f"""
+            SELECT COUNT(*) AS n
+            FROM trade_calendar
+            WHERE is_open = 1
+              AND ((cal_date >= '{from_iso}' AND cal_date <= '{to_iso}')
+                   OR (cal_date >= '{from_compact}' AND cal_date <= '{to_compact}'))
+        """)
+        return int(df.iloc[0, 0]) if not df.empty else 0
 
     def _calendar_days_between(self, from_date: str, to_date: str) -> int:
         """Count calendar days between two dates."""
@@ -248,45 +285,55 @@ class EffectiveDateAuditor:
     # ── per-source profiling ───────────────────────────────────────────
 
     def _profile_local_table(self, table_name: str, date_field: str) -> dict[str, Any]:
-        """Profile a local DuckDB table's date column."""
+        """Profile a ClickHouse ashare table's date column."""
         try:
-            r = self.con.execute(
-                f'SELECT MAX("{date_field}") as latest, '
-                f'MIN("{date_field}") as earliest, '
-                f'COUNT(DISTINCT "{date_field}") as unique_dates, '
-                f"COUNT(*) as total_rows "
+            df = query_dataframe(self.con, (
+                f'SELECT MAX("{date_field}") AS latest, '
+                f'MIN("{date_field}") AS earliest, '
+                f'COUNT(DISTINCT "{date_field}") AS unique_dates, '
+                f"COUNT(*) AS total_rows "
                 f"FROM {table_name}"
-            ).fetchone()
+            ))
+            if df.empty:
+                return {"latest": None, "earliest": None, "unique_dates": 0, "total_rows": 0}
+            r = df.iloc[0]
             return {
-                "latest": str(r[0]) if r[0] else None,
-                "earliest": str(r[1]) if r[1] else None,
-                "unique_dates": r[2],
-                "total_rows": r[3],
+                "latest": str(r["latest"]) if r["latest"] else None,
+                "earliest": str(r["earliest"]) if r["earliest"] else None,
+                "unique_dates": int(r["unique_dates"]),
+                "total_rows": int(r["total_rows"]),
             }
         except Exception as e:
             return {"latest": None, "earliest": None, "unique_dates": 0, "total_rows": 0, "error": str(e)}
 
     def _profile_ann_date(self, table_name: str, end_field: str, ann_field: str) -> dict[str, Any]:
-        """Profile announcement-date lag for period financial tables."""
+        """Profile announcement-date lag for period financial tables.
+
+        ClickHouse dialect: ``dateDiff('day', start, end)`` computes the
+        day difference; ``quantile(0.5)`` is the median aggregate.
+        """
         try:
-            r = self.con.execute(
+            df = query_dataframe(self.con, (
                 f"SELECT "
-                f"AVG(DATEDIFF('day', {end_field}, {ann_field})) as avg_lag, "
-                f"MEDIAN(DATEDIFF('day', {end_field}, {ann_field})) as med_lag, "
-                f"MIN(DATEDIFF('day', {end_field}, {ann_field})) as min_lag, "
-                f"MAX(DATEDIFF('day', {end_field}, {ann_field})) as max_lag, "
-                f'MAX("{ann_field}") as latest_ann, '
-                f'MAX("{end_field}") as latest_end '
+                f"AVG(dateDiff('day', {end_field}, {ann_field})) AS avg_lag, "
+                f"quantile(0.5)(dateDiff('day', {end_field}, {ann_field})) AS med_lag, "
+                f"MIN(dateDiff('day', {end_field}, {ann_field})) AS min_lag, "
+                f"MAX(dateDiff('day', {end_field}, {ann_field})) AS max_lag, "
+                f'MAX("{ann_field}") AS latest_ann, '
+                f'MAX("{end_field}") AS latest_end '
                 f"FROM {table_name} "
                 f"WHERE {ann_field} IS NOT NULL"
-            ).fetchone()
+            ))
+            if df.empty:
+                return {"error": "empty result"}
+            r = df.iloc[0]
             return {
-                "avg_lag_days": round(r[0], 0) if r[0] else None,
-                "med_lag_days": round(r[1], 0) if r[1] else None,
-                "min_lag_days": r[2],
-                "max_lag_days": r[3],
-                "latest_ann_date": str(r[4]) if r[4] else None,
-                "latest_end_date": str(r[5]) if r[5] else None,
+                "avg_lag_days": round(float(r["avg_lag"]), 0) if pd.notna(r["avg_lag"]) else None,
+                "med_lag_days": round(float(r["med_lag"]), 0) if pd.notna(r["med_lag"]) else None,
+                "min_lag_days": int(r["min_lag"]) if pd.notna(r["min_lag"]) else None,
+                "max_lag_days": int(r["max_lag"]) if pd.notna(r["max_lag"]) else None,
+                "latest_ann_date": str(r["latest_ann"]) if r["latest_ann"] else None,
+                "latest_end_date": str(r["latest_end"]) if r["latest_end"] else None,
             }
         except Exception as e:
             return {"error": str(e)}
@@ -295,7 +342,7 @@ class EffectiveDateAuditor:
 
     @staticmethod
     def classify_local_source(source: LocalSource) -> SourceAuditRecord:
-        """Classify a local DuckDB source's date semantics."""
+        """Classify a ClickHouse ashare warehouse source's date semantics."""
         tbl = source.table_name
 
         # ── trade_calendar: static reference ──
@@ -692,7 +739,7 @@ class EffectiveDateAuditor:
         # ── Process external sources ──
         for es in external_sources:
             rec = self.classify_external_source(es)
-            # External sources don't have DuckDB data — use source metadata
+            # External sources have no warehouse table — use source metadata
             rec.actual_latest_date = "N/A (external)"
             rec.actual_latest_effective_date = "N/A (external)"
             rec.notes += (
@@ -955,14 +1002,20 @@ def generate_markdown_report(audit: EffectiveDateAudit) -> str:
 
 
 def run_audit(
-    duckdb_path: str = "./duckdb/ashare.duckdb",
     output_dir: str = "tmp/microstructure/validation",
-) -> EffectiveDateAudit:
+    conn: ClickHouseConnector | None = None,
+) -> Optional[EffectiveDateAudit]:
     """Run the effective-date audit and write results to disk.
 
-    Returns the audit object for downstream consumption.
+    Returns the audit object for downstream consumption, or ``None``
+    (after printing the standard ``{"available": false, ...}`` JSON
+    payload) when the ClickHouse warehouse is unreachable.
     """
-    auditor = EffectiveDateAuditor(duckdb_path)
+    if not connection_available():
+        print(json.dumps(unavailable_payload(), ensure_ascii=False))
+        return None
+
+    auditor = EffectiveDateAuditor(conn)
     audit = auditor.run_audit()
 
     os.makedirs(output_dir, exist_ok=True)
@@ -990,6 +1043,5 @@ def run_audit(
 if __name__ == "__main__":
     import sys
 
-    db_path = sys.argv[1] if len(sys.argv) > 1 else "./duckdb/ashare.duckdb"
-    out_dir = sys.argv[2] if len(sys.argv) > 2 else "tmp/microstructure/validation"
-    run_audit(db_path, out_dir)
+    out_dir = sys.argv[1] if len(sys.argv) > 1 else "tmp/microstructure/validation"
+    run_audit(output_dir=out_dir)

@@ -9,6 +9,12 @@ profits — historically precedes corrections (profit-taking).
 **Data source**: ``stk_cyq_perf`` only.  ``stk_cyq_chips`` is
 **never** used (removed from sync per AGENTS.md).
 
+**BLOCKED_BY_DATA**: the upstream ``stk_cyq_perf`` sync has stopped, so
+the ClickHouse table only carries historical rows and is not refreshed.
+The indicator code is kept for when the sync resumes; until then callers
+must treat an empty result or an unreachable warehouse as a graceful
+``available: false`` degradation, never as a hard failure.
+
 Aggregates computed daily:
   * ``avg_winner_rate``   — cross-sectional mean of winner_rate
   * ``med_winner_rate``   — cross-sectional median of winner_rate
@@ -22,11 +28,15 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
-import duckdb
 import pandas as pd
 
-from .base import format_date, get_connection
-from .metadata import DEFAULT_DUCKDB_PATH
+from .base import (
+    ClickHouseConnector,
+    format_date,
+    get_connection,
+    query_dataframe,
+    validate_trade_date,
+)
 
 # ---------------------------------------------------------------------------
 # Public result type
@@ -67,30 +77,41 @@ def _build_query(
     start_date: str | None = None,
     end_date: str | None = None,
 ) -> str:
-    """Build the DuckDB query for daily winner-rate aggregates.
+    """Build the ClickHouse query for daily winner-rate aggregates.
 
     Returns one row per trade_date with market-wide chip-profit stats.
+
+    Notes on the ClickHouse dialect
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    * ``quantile(0.5)`` is the ClickHouse median aggregate (replaces the
+      legacy ``PERCENTILE_CONT(0.5) WITHIN GROUP`` spelling).
+    * ``quantileIf(0.5)(x, cond)`` is the conditional-quantile combinator
+      (replaces the legacy ``FILTER (WHERE ...)`` aggregate clause).
+    * ``* 1.0`` forces float division for the ratio columns.
     """
     where_clauses: list[str] = []
     if start_date is not None:
-        where_clauses.append(f"p.trade_date >= '{start_date}'")
+        where_clauses.append(
+            f"p.trade_date >= '{validate_trade_date(start_date, name='start_date')}'"
+        )
     if end_date is not None:
-        where_clauses.append(f"p.trade_date <= '{end_date}'")
+        where_clauses.append(
+            f"p.trade_date <= '{validate_trade_date(end_date, name='end_date')}'"
+        )
     where_line = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
 
     return f"""
     WITH wr_agg AS (
         SELECT
             p.trade_date,
-            COUNT(*)         AS stock_count,
-            AVG(p.winner_rate)          AS avg_winner_rate,
-            PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY p.winner_rate) AS med_winner_rate,
+            COUNT(*)                              AS stock_count,
+            AVG(p.winner_rate)                    AS avg_winner_rate,
+            quantile(0.5)(p.winner_rate)          AS med_winner_rate,
             SUM(CASE WHEN p.winner_rate > 90 THEN 1 ELSE 0 END) * 1.0
-                / NULLIF(COUNT(*), 0) AS pct_gt_90,
+                / NULLIF(COUNT(*), 0)             AS pct_gt_90,
             SUM(CASE WHEN p.winner_rate > 95 THEN 1 ELSE 0 END) * 1.0
-                / NULLIF(COUNT(*), 0) AS pct_gt_95,
-            PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY p.winner_rate)
-                FILTER (WHERE p.winner_rate > 90) AS med_hi_wr
+                / NULLIF(COUNT(*), 0)             AS pct_gt_95,
+            quantileIf(0.5)(p.winner_rate, p.winner_rate > 90) AS med_hi_wr
         FROM stk_cyq_perf p
         {where_line}
         GROUP BY p.trade_date
@@ -105,19 +126,23 @@ def _build_query(
 
 
 def compute_winner_rate_pressure(
-    con_or_path: duckdb.DuckDBPyConnection | str = DEFAULT_DUCKDB_PATH,
+    conn: ClickHouseConnector | None = None,
     *,
     start_date: str | date | None = None,
     end_date: str | date | None = None,
 ) -> WinnerRatePressureSummary:
     """Compute market-wide chip-profit / winner-rate pressure.
 
+    Raises ``ValueError`` with a clear ``BLOCKED_BY_DATA`` message when
+    ``stk_cyq_perf`` returns no rows (sync stopped / table empty) so CLI
+    callers can degrade to ``{"available": false, ...}`` instead of a
+    traceback.
+
     Parameters
     ----------
-    con_or_path : duckdb.DuckDBPyConnection or str
-        An open DuckDB connection *or* a path to a ``.duckdb`` file.
-        When a path is given a **read-only** connection is opened and
-        automatically closed after the query.
+    conn : ClickHouseConnector or None
+        Vibe-Trading ClickHouse connector.  When ``None`` (default) a
+        connector is created from ``CLICKHOUSE_*`` environment config.
     start_date : str or date, optional
         Earliest trade date to include (inclusive).
     end_date : str or date, optional
@@ -150,29 +175,28 @@ def compute_winner_rate_pressure(
     """
     start_str, end_str = _validate_date_window(start_date, end_date)
 
-    own_connection = isinstance(con_or_path, str)
-    if own_connection:
-        con = get_connection(con_or_path, read_only=True)
-    else:
-        con = con_or_path
+    if conn is None:
+        conn = get_connection()
 
-    try:
-        query = _build_query(start_date=start_str, end_date=end_str)
-        df = con.execute(query).fetchdf()
-    finally:
-        if own_connection:
-            con.close()
+    query = _build_query(start_date=start_str, end_date=end_str)
+    df = query_dataframe(conn, query)
 
     if df.empty:
         raise ValueError(
-            "No data returned from stk_cyq_perf. Check the date window."
+            "No data returned from stk_cyq_perf. BLOCKED_BY_DATA: the "
+            "stk_cyq_perf sync has stopped, so the table may be empty or "
+            "the ClickHouse warehouse may be unreachable. Check the date "
+            "window and warehouse availability."
         )
 
     df["trade_date"] = pd.to_datetime(df["trade_date"])
-    return _build_summary(df)
+    return _build_summary(df, conn)
 
 
-def _build_summary(df: pd.DataFrame) -> WinnerRatePressureSummary:
+def _build_summary(
+    df: pd.DataFrame,
+    conn: ClickHouseConnector,
+) -> WinnerRatePressureSummary:
     """Construct the summary dict from the daily-aggregated DataFrame."""
     latest: Any = df.iloc[-1]
     latest_trade_date: pd.Timestamp = pd.Timestamp(latest["trade_date"])
@@ -260,7 +284,7 @@ def _build_summary(df: pd.DataFrame) -> WinnerRatePressureSummary:
         })
 
     # Cost pressure for the latest day (determined by a separate query)
-    cost_pressure = _compute_cost_pressure(latest_trade_date)
+    cost_pressure = _compute_cost_pressure(latest_trade_date, conn)
 
     # Coverage note
     data_start = format_date(pd.Timestamp(df.iloc[0]["trade_date"]))
@@ -302,35 +326,33 @@ def _build_summary(df: pd.DataFrame) -> WinnerRatePressureSummary:
 
 def _compute_cost_pressure(
     latest_date: pd.Timestamp,
-    duckdb_path: str = DEFAULT_DUCKDB_PATH,
+    conn: ClickHouseConnector | None = None,
 ) -> dict[str, Any]:
     """Compute cost/price ratio metrics for the latest date.
 
     Joins stk_cyq_perf with stk_factor_pro to get close prices.
     Only considers stocks with winner_rate > 90 (high-profit cohort).
     """
-    date_str = format_date(latest_date)
-    con = get_connection(duckdb_path, read_only=True)
-    try:
-        df = con.execute(f"""
-            SELECT
-                p.winner_rate,
-                p.cost_5pct,
-                p.cost_50pct,
-                p.cost_95pct,
-                p.weight_avg,
-                f.close,
-                p.cost_50pct / NULLIF(f.close, 0) AS cost50_close_ratio,
-                p.weight_avg / NULLIF(f.close, 0) AS wavg_close_ratio,
-                (f.close - p.cost_50pct) / NULLIF(f.close, 0) AS profit_margin
-            FROM stk_cyq_perf p
-            JOIN stk_factor_pro f ON p.ts_code = f.ts_code AND p.trade_date = f.trade_date
-            WHERE p.trade_date = '{date_str}'
-              AND p.winner_rate > 90
-              AND f.close > 0
-        """).fetchdf()
-    finally:
-        con.close()
+    date_str = validate_trade_date(format_date(latest_date), name="latest_date")
+    if conn is None:
+        conn = get_connection()
+    df = query_dataframe(conn, f"""
+        SELECT
+            p.winner_rate,
+            p.cost_5pct,
+            p.cost_50pct,
+            p.cost_95pct,
+            p.weight_avg,
+            f.close,
+            p.cost_50pct / NULLIF(f.close, 0) AS cost50_close_ratio,
+            p.weight_avg / NULLIF(f.close, 0) AS wavg_close_ratio,
+            (f.close - p.cost_50pct) / NULLIF(f.close, 0) AS profit_margin
+        FROM stk_cyq_perf p
+        JOIN stk_factor_pro f ON p.ts_code = f.ts_code AND p.trade_date = f.trade_date
+        WHERE p.trade_date = '{date_str}'
+          AND p.winner_rate > 90
+          AND f.close > 0
+    """)
 
     if df.empty:
         return {
@@ -363,7 +385,7 @@ def _compute_cost_pressure(
 def compute_signal_series(
     df: pd.DataFrame | None = None,
     *,
-    duckdb_path: str = DEFAULT_DUCKDB_PATH,
+    conn: ClickHouseConnector | None = None,
     start_date: str | None = None,
     end_date: str | None = None,
 ) -> pd.DataFrame:
@@ -373,9 +395,11 @@ def compute_signal_series(
     ----------
     df : pd.DataFrame or None
         If provided, use this DataFrame as the daily-agg result
-        (from ``_build_query``).  Otherwise, query DuckDB.
-    duckdb_path : str
-        Path to DuckDB file (used only if ``df`` is None).
+        (from ``_build_query``).  Otherwise, query ClickHouse.
+    conn : ClickHouseConnector or None
+        Vibe-Trading ClickHouse connector (used only if ``df`` is None).
+        When ``None`` a connector is created from ``CLICKHOUSE_*``
+        environment config.
     start_date, end_date : str or None
         Date window (used only if ``df`` is None).
 
@@ -383,15 +407,14 @@ def compute_signal_series(
     -------
     pd.DataFrame
         Columns: ``trade_date``, ``avg_winner_rate``, ``pct_gt_90``,
-        ``signal`` (0 or 1).
+        ``signal`` (0 or 1).  Empty (typed columns only) when
+        ``stk_cyq_perf`` carries no rows — BLOCKED_BY_DATA degradation.
     """
     if df is None:
-        con = get_connection(duckdb_path, read_only=True)
-        try:
-            query = _build_query(start_date=start_date, end_date=end_date)
-            df = con.execute(query).fetchdf()
-        finally:
-            con.close()
+        if conn is None:
+            conn = get_connection()
+        query = _build_query(start_date=start_date, end_date=end_date)
+        df = query_dataframe(conn, query)
         if df.empty:
             return pd.DataFrame(columns=["trade_date", "avg_winner_rate", "pct_gt_90", "signal"])
         df["trade_date"] = pd.to_datetime(df["trade_date"])

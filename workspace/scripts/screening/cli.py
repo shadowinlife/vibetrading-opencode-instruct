@@ -1,5 +1,10 @@
 """CLI entry point for the screening pipeline.
 
+Data layer: all screening layers query the Vibe-Trading ClickHouse
+warehouse (env-configured ``CLICKHOUSE_*`` connection).  When the warehouse
+is unreachable the CLI degrades gracefully: it prints
+``{"available": false, "reason": "ClickHouse unreachable"}`` and exits 0.
+
 Usage:
     python -m scripts.screening.cli                          # default: beauty-contest
     python -m scripts.screening.cli --strategy value         # value screening
@@ -38,6 +43,17 @@ def main():
             print(f"❌ 错误: --end-date 格式无效 '{args.end_date}'，应为 YYYY-MM-DD")
             sys.exit(1)
 
+    # Graceful degradation: the whole pipeline reads from ClickHouse, so bail
+    # out cleanly (exit 0, machine-readable JSON) when it is unreachable.
+    from scripts.screening.ch_client import ClickHouseUnavailableError, get_connector
+    try:
+        ch_available = get_connector().health_check()
+    except Exception:
+        ch_available = False
+    if not ch_available:
+        print(json.dumps({"available": False, "reason": "ClickHouse unreachable"}))
+        sys.exit(0)
+
     # Strategy-specific parameters
     strategy_params = {
         "beauty-contest": {"roe_min": 8, "revenue_yoy_min": 0, "netprofit_yoy_min": -20},
@@ -70,7 +86,11 @@ def main():
     l1_kwargs["revenue_yoy_min"] = params["revenue_yoy_min"]
     l1_kwargs["netprofit_yoy_min"] = params["netprofit_yoy_min"]
 
-    l1_df = screen_fundamental(**l1_kwargs)
+    try:
+        l1_df = screen_fundamental(**l1_kwargs)
+    except ClickHouseUnavailableError:
+        print(json.dumps({"available": False, "reason": "ClickHouse unreachable"}))
+        sys.exit(0)
     l1_summary = screen_fundamental_summary(l1_df)
     print(f"  通过: {l1_summary['count']} 只")
     if l1_summary['count'] > 0:

@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from scripts.backtest.signal_builders._common import EPS, rolling_zscore
+from scripts.vibe_bridge.signal_builders._common import EPS, rolling_zscore
 
 
 def ma_deviation_z(
