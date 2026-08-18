@@ -1,12 +1,12 @@
-# opencode-serve:v2.0.0-mymain 部署指南
+# opencode-serve:v2.1.0-mymain 部署指南
 
-> 镜像: `registry.cn-hangzhou.aliyuncs.com/jiefengnewsv2/opencode-serve:v2.0.0-mymain`
+> 镜像: `registry.cn-hangzhou.aliyuncs.com/jiefengnewsv2/opencode-serve:v2.1.0-mymain`
 
 ## 1. 拉取镜像
 
 ```bash
-docker pull registry.cn-hangzhou.aliyuncs.com/jiefengnewsv2/opencode-serve:v2.0.0-mymain
-docker tag registry.cn-hangzhou.aliyuncs.com/jiefengnewsv2/opencode-serve:v2.0.0-mymain opencode-serve:v2.0.0-mymain
+docker pull registry.cn-hangzhou.aliyuncs.com/jiefengnewsv2/opencode-serve:v2.1.0-mymain
+docker tag registry.cn-hangzhou.aliyuncs.com/jiefengnewsv2/opencode-serve:v2.1.0-mymain opencode-serve:v2.1.0-mymain
 ```
 
 ## 2. 创建目录结构
@@ -31,6 +31,11 @@ CLICKHOUSE_DATABASE=ashare
 CLICKHOUSE_USER=default
 CLICKHOUSE_PASSWORD=your-clickhouse-password
 
+# ===== ClickHouse llm_role 只读用户（可选，供 VT ch_* 语义层工具使用）=====
+# 不配置时 ch_list_tables/ch_describe_table/ch_query 不可用，其余工具正常
+# CLICKHOUSE_LLM_USER=llm_role
+# CLICKHOUSE_LLM_PASSWORD=your-llm-role-password
+
 # ===== 通知（可选）=====
 # DINGTALK_WEBHOOK=https://oapi.dingtalk.com/robot/send?access_token=xxx
 EOF
@@ -49,7 +54,7 @@ docker run -d \
   -v $(pwd)/volumes/cron-logs:/workspace/cron_jobs/logs \
   --memory 6g \
   --cpus 0.8 \
-  opencode-serve:v2.0.0-mymain
+  opencode-serve:v2.1.0-mymain
 ```
 
 ## 5. 验证
@@ -69,7 +74,7 @@ docker logs opencode-web 2>&1 | grep '\[entrypoint\]'
 ```
 [entrypoint] opencode.json rendered from template
 [entrypoint] ClickHouse OK — warming schema cache
-[entrypoint] VT MCP server OK — 59 tools registered
+[entrypoint] VT MCP server OK — 78 tools registered
 [entrypoint] VT_MEMORY=full, VT_MEMORY_MCP_TOOLS=1 → memory tools enabled
 ```
 

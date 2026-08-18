@@ -2,7 +2,7 @@
 set -euo pipefail
 
 REGISTRY="registry.cn-hangzhou.aliyuncs.com/jiefengnewsv2"
-VERSION="${1:-v2.0.0-mymain}"
+VERSION="${1:-v2.1.0-mymain}"
 VT_BRANCH="mymain"
 
 echo "=== ECS AMD64 Build: opencode-serve:${VERSION} ==="

@@ -56,6 +56,8 @@ try:
         'CLICKHOUSE_USER':     os.environ.get('CLICKHOUSE_USER', 'default'),
         'CLICKHOUSE_PASSWORD': os.environ.get('CLICKHOUSE_PASSWORD', ''),
         'CLICKHOUSE_DATABASE': os.environ.get('CLICKHOUSE_DATABASE', 'ashare'),
+        'CLICKHOUSE_LLM_USER':     os.environ.get('CLICKHOUSE_LLM_USER', ''),
+        'CLICKHOUSE_LLM_PASSWORD': os.environ.get('CLICKHOUSE_LLM_PASSWORD', ''),
     }
     rendered = tmpl.render(**ctx)
     # Validate JSON

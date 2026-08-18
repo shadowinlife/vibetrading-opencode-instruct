@@ -1,6 +1,6 @@
 # opencode-serve 镜像使用说明书
 
-> **版本**: v2.0.0-mymain  
+> **版本**: v2.1.0-mymain  
 > **架构**: AMD64 (Linux)  
 > **基础镜像**: Ubuntu 22.04 + Python 3.12 + Node.js 20
 
@@ -32,7 +32,7 @@
 
 - **OpenCode** Web Server（HTTP API + WebSocket），端口 4096
 - **OMO**（oh-my-openagent）并行任务分解插件
-- **Vibe-Trading**（mymain 分支）— 59 个 MCP 工具的量化研究引擎
+- **Vibe-Trading**（mymain 分支，v0.1.13）— 73 个 MCP 工具的量化研究引擎（`VT_MEMORY_MCP_TOOLS=1` 时 78 个，含 5 个 `memory_*` 工具）
 - **nano-search-mcp** — 中国金融数据搜索（新浪财经、百炼 WebSearch）
 - **data-warehouse** Skill — ClickHouse 数据仓库查询接口
 - **html-report** Skill — ECharts 交互式 HTML 报告生成
@@ -46,6 +46,7 @@
 | 记忆持久化 | `/workspace/.vt-memory/`，docker-compose volume 挂载，容器重启不丢失 |
 | 分层镜像 | base（4.19GB，极少重建）→ app（每次部署重建） |
 | ClickHouse 集成 | 199 列 T-1 A 股历史全量数据 |
+| ClickHouse 语义层 | `ch_list_tables` / `ch_describe_table` / `ch_query`（llm_role 只读守卫，详见 6.3） |
 | 实时数据补数 | 当日 OHLCV 通过 tencent/akshare/yfinance 实时获取 |
 | 周期任务 | cron 定时执行策略，钉钉通知 |
 
@@ -59,7 +60,7 @@
 │                                                      │
 │  ┌──────────┐  ┌──────────┐  ┌──────────────────┐  │
 │  │ OpenCode  │  │   OMO    │  │ Vibe-Trading MCP │  │
-│  │  Server   │  │  Plugin  │  │  (59 tools)      │  │
+│  │  Server   │  │  Plugin  │  │  (73/78 tools)   │  │
 │  │           │  │          │  │  ┌─────────────┐ │  │
 │  │           │  │          │  │  │MemoryGuard  │ │  │
 │  │           │  │          │  │  │Middleware   │ │  │
@@ -90,7 +91,7 @@
 
 ```
 ┌─────────────────────────────────────────────┐
-│ opencode-serve:v2.0.0-mymain  (~5GB)       │
+│ opencode-serve:v2.1.0-mymain  (~5GB)       │
 │ ├── OMO plugin                              │
 │ ├── Vibe-Trading mymain (editable install)  │
 │ ├── nano-search-mcp                         │
@@ -147,10 +148,10 @@ docker tag registry.cn-hangzhou.aliyuncs.com/<your-registry-namespace>/opencode-
 
 # 4. 构建 app 镜像
 # 方式 A: 从本地 VT 源码
-VT_SOURCE=../Vibe-Trading ./build.sh --app --tag v2.0.0-mymain
+VT_SOURCE=../Vibe-Trading ./build.sh --app --tag v2.1.0-mymain
 
 # 方式 B: 从 GitHub clone
-VT_SOURCE=https://github.com/shadowinlife/Vibe-Trading.git ./build.sh --app --tag v2.0.0-mymain
+VT_SOURCE=https://github.com/shadowinlife/Vibe-Trading.git ./build.sh --app --tag v2.1.0-mymain
 
 # 5. 启动
 docker compose up -d
@@ -190,9 +191,9 @@ curl http://localhost:4096/health
 
 ```bash
 # VT_SOURCE 环境变量指定 Vibe-Trading 源码位置
-VT_SOURCE=../Vibe-Trading ./build.sh --app --tag v2.0.0-mymain        # 本地目录
+VT_SOURCE=../Vibe-Trading ./build.sh --app --tag v2.1.0-mymain        # 本地目录
 VT_SOURCE=https://github.com/shadowinlife/Vibe-Trading.git ./build.sh # GitHub URL
-VT_SOURCE=vendor/Vibe-Trading ./build.sh --app --tag v2.0.0-mymain    # 预解压目录
+VT_SOURCE=vendor/Vibe-Trading ./build.sh --app --tag v2.1.0-mymain    # 预解压目录
 ```
 
 app 镜像构建时间约 5-8 分钟（基础镜像已缓存）。
@@ -201,7 +202,7 @@ app 镜像构建时间约 5-8 分钟（基础镜像已缓存）。
 
 ```bash
 # 在 ARM64 (Apple Silicon) 上构建 AMD64 镜像
-DOCKER_PLATFORM=linux/amd64 VT_SOURCE=../Vibe-Trading ./build.sh --app --tag v2.0.0-mymain
+DOCKER_PLATFORM=linux/amd64 VT_SOURCE=../Vibe-Trading ./build.sh --app --tag v2.1.0-mymain
 ```
 
 ---
@@ -219,6 +220,8 @@ DOCKER_PLATFORM=linux/amd64 VT_SOURCE=../Vibe-Trading ./build.sh --app --tag v2.
 | `CLICKHOUSE_DATABASE` | ❌ | `ashare` | 数据库名 |
 | `CLICKHOUSE_USER` | ❌ | `default` | 用户名 |
 | `CLICKHOUSE_PASSWORD` | ❌ | — | 密码 |
+| `CLICKHOUSE_LLM_USER` | ❌ | — | ClickHouse `llm_role` 只读用户名，供 VT `ch_*` 语义层工具使用（见 6.3） |
+| `CLICKHOUSE_LLM_PASSWORD` | ❌ | — | `llm_role` 只读用户密码；不配置时 `ch_list_tables`/`ch_describe_table`/`ch_query` 不可用，其余 VT 工具不受影响 |
 | `DINGTALK_WEBHOOK` | ❌ | — | 钉钉机器人 Webhook |
 | `SMTP_HOST` | ❌ | — | SMTP 服务器 |
 | `SMTP_AUTH_CODE` | ❌ | — | SMTP 授权码 |
@@ -237,6 +240,37 @@ DOCKER_PLATFORM=linux/amd64 VT_SOURCE=../Vibe-Trading ./build.sh --app --tag v2.
 
 这些变量在 Dockerfile 中预设，通常无需手动修改。
 
+### 6.3 VT MCP 工具特性（v0.1.13 基线）
+
+本镜像的 Vibe-Trading 基线为 **mymain @ v0.1.13**，MCP Server 默认暴露 **73 个工具**；`VT_MEMORY_MCP_TOOLS=1`（本镜像默认开启）时额外注册 5 个 `memory_*` 工具，共 **78 个**。配套资产：**90 个内置 skills**、**30 个 swarm 多智能体预设**。
+
+相对上一版基线，新增以下能力：
+
+| 能力 | 说明 |
+|------|------|
+| ClickHouse 语义层 | `ch_list_tables` / `ch_describe_table` / `ch_query` 三个工具，对 `ashare` 库（56 张表）做受约束的只读 SELECT |
+| 估值工具 | `get_valuation` — DCF / 相对估值 / 综合估值引擎 |
+| 外汇/贵金属数据源 | `get_market_data` 的 tickerall 数据源支持 `mt5`（本地 MetaTrader 5 终端，如 `EUR/USD`、`XAUUSD.FX`）；**仅显式指定 `source="mt5"` 时启用**，`auto` 路由永远不会选中它 |
+| 数据溯源增强 | `get_market_data` 返回的 `_provenance` 中新增 `volume_unit` 字段（`lots` / `shares`），修复 A 股手数与股量纲混淆（上游 #1062） |
+| 前端面板 | VT Web 前端新增 Options Lab（期权实验室）、回测 tearsheet、因子研究（Factor Research）面板 |
+
+#### `ch_*` 语义层安全模型
+
+`ch_query` 是受多重守卫的"灵活性通道"，安全约束在 VT 侧强制执行：
+
+- **凭据隔离**：只使用专用 `llm_role` 只读账号（`CLICKHOUSE_LLM_USER` / `CLICKHOUSE_LLM_PASSWORD`）连接，绝不使用 `default` 用户
+- **SQL AST 守卫**：SQL 必须经 sqlglot 解析为**单条普通 SELECT**；任何 DDL/DML（INSERT/UPDATE/DELETE/DROP/ALTER/CREATE/TRUNCATE）、SYSTEM/SET/USE/KILL 类语句、GLOBAL IN/JOIN、SETTINGS 子句、INTO 目标、ashare 白名单之外的表一律拒绝
+- **结果限额**：最外层 SELECT 强制注入/钳制 `LIMIT 500`，结果体积上限约 50KB（超出显式截断并提示），服务端查询超时 30 秒
+- **审计日志**：每次调用追加一条 JSON 记录到 `~/.vibe-trading/logs/ch_query_audit.jsonl`
+
+> ⚠️ `CLICKHOUSE_LLM_USER` / `CLICKHOUSE_LLM_PASSWORD` 未配置时，这 3 个 `ch_*` 工具返回 `missing_llm_role_credentials` 错误而不可用，但**其余所有 VT 工具正常工作**（数据仓库查询仍可通过 `data-warehouse` Skill 走 `CLICKHOUSE_USER`）。
+
+### 6.4 VT 工具禁用策略（vibe-trading-tools.json）
+
+`config/vibe-trading-tools.json` 声明 agent 侧禁用的 VT 工具。当前仅禁用 `trading_select_connection`（防止 agent 自行切换交易连接器 profile）。
+
+> 历史版本中曾列出 `trading_place_order` / `trading_cancel_order` / `trading_modify_order` / `trading_place_bracket` 四个禁用项——但 mymain 的 MCP 面**从未暴露**任何下单/撤单工具（它们仅存在于 agent + CLI 侧），这些条目属于对不存在工具的无效禁用，已在 v2.1.0-mymain 移除。MCP 面的交易类工具仅为 8 个只读工具：`trading_account` / `trading_check` / `trading_connections` / `trading_history` / `trading_orders` / `trading_positions` / `trading_quote` / `trading_select_connection`。
+
 ---
 
 ## 7. 部署
@@ -247,7 +281,7 @@ DOCKER_PLATFORM=linux/amd64 VT_SOURCE=../Vibe-Trading ./build.sh --app --tag v2.
 # docker-compose.yml
 services:
   opencode-web:
-    image: opencode-serve:v2.0.0-mymain
+    image: opencode-serve:v2.1.0-mymain
     container_name: opencode-web
     restart: unless-stopped
     ports:
@@ -294,17 +328,17 @@ docker run -d \
   --memory 6g \
   --cpus 0.8 \
   --restart unless-stopped \
-  opencode-serve:v2.0.0-mymain
+  opencode-serve:v2.1.0-mymain
 ```
 
 ### 7.3 从 Registry 部署
 
 ```bash
 # 拉取镜像
-docker pull registry.cn-hangzhou.aliyuncs.com/<your-registry-namespace>/opencode-serve:v2.0.0-mymain
+docker pull registry.cn-hangzhou.aliyuncs.com/<your-registry-namespace>/opencode-serve:v2.1.0-mymain
 
 # 标记本地
-docker tag registry.cn-hangzhou.aliyuncs.com/<your-registry-namespace>/opencode-serve:v2.0.0-mymain opencode-serve:v2.0.0-mymain
+docker tag registry.cn-hangzhou.aliyuncs.com/<your-registry-namespace>/opencode-serve:v2.1.0-mymain opencode-serve:v2.1.0-mymain
 
 # 启动
 docker compose up -d
@@ -380,7 +414,7 @@ MemoryGuard 是 mymain 分支的核心特性，在 FastMCP 层面拦截所有 Vi
 
 | 阶段 | 触发条件 | 动作 |
 |------|---------|------|
-| 每次工具调用 | 所有 59 个 VT MCP 工具 | `memory_save`（工具名、参数、结果、耗时） |
+| 每次工具调用 | 所有 78 个 VT MCP 工具（73 基础 + 5 个 `memory_*`） | `memory_save`（工具名、参数、结果、耗时） |
 | 回测/因子分析/交易日志后 | `backtest`、`factor_analysis` 等 | `memory_reflect`（sharpe、max_drawdown 等指标） |
 | 容器启动时 | entrypoint 阶段 | `memory_status` 验证 |
 
@@ -434,9 +468,11 @@ docker logs opencode-web 2>&1 | grep "\[entrypoint\]"
 [entrypoint] opencode.json rendered from template → /home/opencode/.opencode/opencode.json
 [entrypoint] Plugin cache symlinked
 [entrypoint] ClickHouse OK — warming schema cache
-[entrypoint] VT MCP server OK — 59 tools registered
+[entrypoint] VT MCP server OK — 78 tools registered
 [entrypoint] VT_MEMORY=full, VT_MEMORY_MCP_TOOLS=1 → memory tools enabled
 ```
+
+> 工具数由 entrypoint 动态统计：默认 73 个，`VT_MEMORY_MCP_TOOLS=1`（本镜像默认）时额外注册 5 个 `memory_*` 工具，共 78 个。
 
 ### 9.2 健康检查
 
@@ -524,7 +560,7 @@ docker exec opencode-web cat /workspace/cron_jobs/logs/<task_id>_<timestamp>.log
 cd ~ && \
 wget https://raw.githubusercontent.com/shadowinlife/vibetrading-opencode-instruct/main/deploy/ecs-build.sh && \
 chmod +x ecs-build.sh && \
-./ecs-build.sh v2.0.0-mymain
+./ecs-build.sh v2.1.0-mymain
 ```
 
 ### 11.2 手动构建
@@ -540,11 +576,11 @@ docker pull registry.cn-hangzhou.aliyuncs.com/<your-registry-namespace>/opencode
 docker tag registry.cn-hangzhou.aliyuncs.com/<your-registry-namespace>/opencode-serve-base:latest opencode-serve-base:latest
 
 # 3. App 镜像
-VT_SOURCE=../Vibe-Trading ./build.sh --app --tag v2.0.0-mymain
+VT_SOURCE=../Vibe-Trading ./build.sh --app --tag v2.1.0-mymain
 
 # 4. 推送
-docker tag opencode-serve:v2.0.0-mymain registry.cn-hangzhou.aliyuncs.com/<your-registry-namespace>/opencode-serve:v2.0.0-mymain
-docker push registry.cn-hangzhou.aliyuncs.com/<your-registry-namespace>/opencode-serve:v2.0.0-mymain
+docker tag opencode-serve:v2.1.0-mymain registry.cn-hangzhou.aliyuncs.com/<your-registry-namespace>/opencode-serve:v2.1.0-mymain
+docker push registry.cn-hangzhou.aliyuncs.com/<your-registry-namespace>/opencode-serve:v2.1.0-mymain
 ```
 
 ### 11.3 OSS 桥接（当 GitHub clone 超时时）
@@ -562,7 +598,7 @@ cd ~/vibetrading-opencode-instruct && \
 wget -O /tmp/vt-mymain.tar.gz "https://<your-oss-bucket>.<your-oss-endpoint>/build/vt-mymain.tar.gz" && \
 mkdir -p vendor/Vibe-Trading && \
 tar -xzf /tmp/vt-mymain.tar.gz -C vendor/Vibe-Trading/ && \
-VT_SOURCE=vendor/Vibe-Trading ./build.sh --app --tag v2.0.0-mymain
+VT_SOURCE=vendor/Vibe-Trading ./build.sh --app --tag v2.1.0-mymain
 ```
 
 ### 11.4 ECS 踩坑要点
@@ -584,7 +620,7 @@ VT_SOURCE=vendor/Vibe-Trading ./build.sh --app --tag v2.0.0-mymain
 | 镜像 | 地址 |
 |------|------|
 | 基础镜像 | `registry.cn-hangzhou.aliyuncs.com/<your-registry-namespace>/opencode-serve-base:latest` |
-| App 镜像 | `registry.cn-hangzhou.aliyuncs.com/<your-registry-namespace>/opencode-serve:v2.0.0-mymain` |
+| App 镜像 | `registry.cn-hangzhou.aliyuncs.com/<your-registry-namespace>/opencode-serve:v2.1.0-mymain` |
 
 ### 12.2 推送镜像
 
@@ -593,14 +629,14 @@ VT_SOURCE=vendor/Vibe-Trading ./build.sh --app --tag v2.0.0-mymain
 docker login --username=<阿里云账号> registry.cn-hangzhou.aliyuncs.com
 
 # 推送
-docker tag opencode-serve:v2.0.0-mymain registry.cn-hangzhou.aliyuncs.com/<your-registry-namespace>/opencode-serve:v2.0.0-mymain
-docker push registry.cn-hangzhou.aliyuncs.com/<your-registry-namespace>/opencode-serve:v2.0.0-mymain
+docker tag opencode-serve:v2.1.0-mymain registry.cn-hangzhou.aliyuncs.com/<your-registry-namespace>/opencode-serve:v2.1.0-mymain
+docker push registry.cn-hangzhou.aliyuncs.com/<your-registry-namespace>/opencode-serve:v2.1.0-mymain
 ```
 
 ### 12.3 拉取镜像
 
 ```bash
-docker pull registry.cn-hangzhou.aliyuncs.com/<your-registry-namespace>/opencode-serve:v2.0.0-mymain
+docker pull registry.cn-hangzhou.aliyuncs.com/<your-registry-namespace>/opencode-serve:v2.1.0-mymain
 ```
 
 ---
@@ -787,7 +823,7 @@ docker builder prune
 
 ---
 
-> **文档版本**: 1.0  
-> **适用镜像**: opencode-serve:v2.0.0-mymain  
+> **文档版本**: 1.1  
+> **适用镜像**: opencode-serve:v2.1.0-mymain  
 > **维护者**: Sisyphus via OpenCode  
-> **最后更新**: 2026-07-28
+> **最后更新**: 2026-08-17

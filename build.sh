@@ -81,17 +81,19 @@ if [[ "$VT_SOURCE" == http* ]]; then
     echo "=== VT cloned: $(find "$VENDOR_DIR" -type f -name '*.py' | wc -l) Python files ==="
 elif [ -d "$VT_SOURCE" ]; then
     echo "=== Vendoring Vibe-Trading from $VT_SOURCE (mymain branch) ==="
-    mkdir -p "$VENDOR_DIR"
     VT_BRANCH=$(cd "$VT_SOURCE" && git branch --show-current 2>/dev/null || echo "unknown")
     if [ "$VT_BRANCH" != "mymain" ]; then
         echo "WARNING: VT source is on branch '$VT_BRANCH', expected 'mymain'"
     fi
-    rsync -a \
-        --exclude='.git' --exclude='frontend/' --exclude='node_modules/' \
-        --exclude='__pycache__/' --exclude='*.pyc' --exclude='*.egg-info/' \
-        --exclude='.venv/' --exclude='.codex/' --exclude='assets/' \
-        --exclude='tests/' --exclude='agent/tests/' \
-        "$VT_SOURCE/" "$VENDOR_DIR/"
+    # Fresh copy of the COMMITTED tree via git archive — guarantees no
+    # untracked dev artifacts (.omo/.qoder sessions, screenshots, caches)
+    # leak into the vendor dir, and no stale files survive from prior builds.
+    rm -rf "$VENDOR_DIR"
+    mkdir -p "$VENDOR_DIR"
+    git -C "$VT_SOURCE" archive "$VT_BRANCH" | tar -x -C "$VENDOR_DIR"
+    # Same exclusions the app image does not need (kept in sync with Dockerfile COPY)
+    rm -rf "$VENDOR_DIR/frontend" "$VENDOR_DIR/node_modules" "$VENDOR_DIR/tests" \
+           "$VENDOR_DIR/agent/tests" "$VENDOR_DIR/assets" "$VENDOR_DIR/.codex"
     echo "=== VT vendored: $(find "$VENDOR_DIR" -type f -name '*.py' | wc -l) Python files ==="
 else
     echo "ERROR: Vibe-Trading source not found at $VT_SOURCE"

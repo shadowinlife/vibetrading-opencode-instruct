@@ -10,7 +10,7 @@ This project packages the OpenCode Web Server research environment into a reprod
 - **nano-search-mcp** — local MCP server for Chinese financial data (新浪财经, 百炼 WebSearch)
 - **3 OpenCode skills**: data-warehouse (ClickHouse), html-report (ECharts), periodic-execution (cron)
 - **Full AGENTS.md** with behavior instructions for 5 scenarios (A through E)
-- **Quantitative scripts**: Walk-Forward backtest, Chanlun analysis, market microstructure, multi-layer screening, agent memory
+- **Quantitative scripts**: market microstructure, multi-layer screening, realtime quote adapter (backtest / Chanlun / agent memory now provided by Vibe-Trading built-ins)
 - **Cron job infrastructure** with CLI management and DingTalk/email notification
 
 ## Quick Start
@@ -75,14 +75,10 @@ vibetrading-opencode-instruct/
 └── workspace/                  # Runtime files
     ├── pyproject.toml
     ├── scripts/                # Core computation engines
-    │   ├── backtest/           # Walk-Forward backtest engine (engine, metrics, HPO, portfolio)
-    │   ├── chanlun/            # Chanlun (缠论) technical analysis
     │   ├── microstructure/     # Market microstructure (escape top, concentration, margin, flow)
     │   ├── screening/          # 3-layer stock screening (fundamental, narrative, flow)
-    │   ├── memory/             # Agent memory management (decay, evolution, scoring, injection)
     │   ├── realtime/           # Quote adapter + signal scanner
-    │   ├── experiment/         # Experiment runner
-    │   └── vibe_bridge/        # Vibe-Trading adapter
+    │   └── vibe_bridge/        # Vibe-Trading adapter (22 signal builders)
     └── cron_jobs/              # Periodic task management
         ├── manage.py           # CLI management tool
         ├── notifier.py         # DingTalk/email notification
@@ -107,29 +103,27 @@ Manages periodic strategy execution via `cron_jobs/manage.py`. Supports register
 
 ## Scripts Reference
 
-### `scripts/backtest/` — Walk-Forward Backtest Engine
-
-Production-grade backtest framework with Walk-Forward validation, hyperparameter optimization, portfolio management, and 8 signal builder modules.
-
-### `scripts/chanlun/` — Chanlun (缠论) Analysis
-
-Fractal detection, stroke construction, and central hub identification for Chinese technical analysis.
+> **Post-migration state**: `scripts/backtest/` (Walk-Forward engine), `scripts/chanlun/`, `scripts/memory/` and `scripts/experiment/` have been REMOVED, replaced by Vibe-Trading built-ins:
+>
+> - **Backtest** → VT backtest engine (`backtest` tool) + `scripts/vibe_bridge/` for custom signals
+> - **Chanlun (缠论)** → VT `chanlun` skill
+> - **Agent memory** → VT memory lifecycle (F1–F4: save / recall / reinforce / reflect)
 
 ### `scripts/microstructure/` — Market Microstructure
 
-30+ modules: escape top预警, concentration, margin/borrow divergence, flow analysis, breadth, macro indicators, validation.
+30+ modules: escape top预警, concentration, margin/borrow divergence, flow analysis, breadth, macro indicators, validation. Data layer now reads ClickHouse via the VT connector.
 
 ### `scripts/screening/` — Multi-Layer Stock Screening
 
-Three-layer pipeline: fundamental (ROE, growth, OCF), narrative momentum (concept heat, research coverage), capital flow resonance.
-
-### `scripts/memory/` — Agent Memory Management
-
-Context injection, Ebbinghaus decay, evolution cycles, relevance scoring, and swarm bridge for multi-agent coordination.
+Three-layer pipeline: fundamental (ROE, growth, OCF), narrative momentum (concept heat, research coverage), capital flow resonance. Data sourced from ClickHouse.
 
 ### `scripts/realtime/` — Real-Time Data
 
-Unified quote adapter (tushare/akshare/yfinance) and real-time signal scanner.
+Unified quote adapter (tushare/akshare/yfinance) and real-time signal scanner, running alongside VT market-data federation.
+
+### `scripts/vibe_bridge/` — Vibe-Trading Adapter
+
+Adapter between the local scripts and the VT backtest engine. Hosts the 22 signal builders relocated from the former `scripts/backtest/` engine (`SIGNAL_REGISTRY` in `signal_builders/`).
 
 ## Cron Jobs
 
@@ -161,6 +155,8 @@ python cron_jobs/manage.py remove <task_id>  # Remove
 | `CLICKHOUSE_USER` | No | ClickHouse user (default: default) |
 | `CLICKHOUSE_PASSWORD` | No | ClickHouse password |
 | `CLICKHOUSE_DATABASE` | No | ClickHouse database (default: ashare) |
+| `CLICKHOUSE_LLM_USER` | No | ClickHouse `llm_role` read-only user for the VT `ch_*` semantic-layer tools |
+| `CLICKHOUSE_LLM_PASSWORD` | No | Password of the `llm_role` user; the 3 `ch_*` tools are unusable when unset, everything else works |
 | `DINGTALK_WEBHOOK` | No | DingTalk robot webhook for notifications |
 | `SMTP_HOST` / `SMTP_AUTH_CODE` | No | Email notification |
 
