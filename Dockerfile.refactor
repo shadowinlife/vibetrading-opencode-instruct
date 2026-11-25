@@ -1,0 +1,119 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 1: Builder — 安装所有依赖 + 预热插件
+# ─────────────────────────────────────────────────────────────────────────────
+FROM registry.cn-hangzhou.aliyuncs.com/jfmirrors/ubuntu:24.04 AS builder
+
+# 替换 apt 源为阿里云
+RUN sed -i \
+  's|http://archive.ubuntu.com/ubuntu|http://mirrors.aliyun.com/ubuntu|g; s|http://security.ubuntu.com/ubuntu|http://mirrors.aliyun.com/ubuntu|g' \
+  /etc/apt/sources.list.d/ubuntu.sources
+
+# 系统依赖
+RUN apt update && apt install --no-install-recommends -y \
+    ca-certificates \
+    curl \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# 配置 npm 镜像（中国环境加速 arborist 下载）
+ENV NPM_CONFIG_REGISTRY=https://registry.npmmirror.com
+
+# 安装 OpenCode CLI
+RUN curl -fsSL https://opencode.ai/install | bash
+ENV PATH=$PATH:/root/.opencode/bin
+
+# 创建工作目录
+WORKDIR /workspace
+
+# 复制 opencode 配置
+COPY ./config/opencode.json.tmpl /workspace/opencode.json
+COPY ./config/oh-my-openagent.json /workspace/.opencode/
+COPY ./config/tui.json /workspace/.opencode/
+
+# 预热插件（触发完整 bootstrap，安装 oh-my-openagent 到 cache）
+RUN opencode session list --format json > /dev/null 2>&1; true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 2: Runtime — 精简运行镜像
+# ─────────────────────────────────────────────────────────────────────────────
+FROM registry.cn-hangzhou.aliyuncs.com/jfmirrors/ubuntu:24.04 AS runtime
+
+LABEL maintainer="invest-assistant"
+LABEL description="Invest assistant based on opencode AI coding server"
+
+# 替换 apt 源（runtime 也需要 curl/git 用于 MCP 等）
+RUN sed -i \
+  's|http://archive.ubuntu.com/ubuntu|http://mirrors.aliyun.com/ubuntu|g; s|http://security.ubuntu.com/ubuntu|http://mirrors.aliyun.com/ubuntu|g' \
+  /etc/apt/sources.list.d/ubuntu.sources
+
+RUN apt update && apt install --no-install-recommends -y \
+    ca-certificates \
+    curl \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# 安装 uv + Python
+ENV UV_DEFAULT_INDEX=https://mirrors.aliyun.com/pypi/simple/
+COPY --from=registry.cn-hangzhou.aliyuncs.com/jfmirrors/uv:0.11.31 /uv /uvx /bin/
+RUN uv python install 3.12
+
+# 安装 Bun
+ENV NPM_CONFIG_REGISTRY=https://registry.npmmirror.com
+COPY --from=registry.cn-hangzhou.aliyuncs.com/jfmirrors/bun:1 /usr/local/bin/bun /bin/
+
+# 从 builder 复制运行时依赖
+COPY --from=builder /root/.opencode /root/.opencode
+# OpenCode 缓存（包含预热好的插件 + models.json）
+COPY --from=builder /root/.cache/opencode /root/.cache/opencode
+# OpenCode 全局配置
+COPY --from=builder /root/.config/opencode /root/.config/opencode
+# OpenCode 状态目录（db 等）
+COPY --from=builder /root/.local/share/opencode /root/.local/share/opencode
+ENV PATH=$PATH:/root/.opencode/bin
+
+# 工作目录
+COPY --from=builder /workspace /workspace
+WORKDIR /workspace
+
+RUN uv init && uv add playwright \
+                      plotly \
+                      kaleido \
+                      ta \
+                      pyharmonics \
+                      loguru \
+                      markdownify \
+                      pycryptodome \
+                      binance-connector \
+                      lz4 \
+                      logistro \
+                      pytest \
+                      typer \
+                      tzdata \
+                      asyncio-nats-client
+ENV VIRTUAL_ENV=/workspace/.venv
+ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
+
+COPY --from=registry.cn-hangzhou.aliyuncs.com/jiefengnewsv2/opencode-serve:v2.0.0-mymain /opt/vibe-trading/ /opt/vibe-trading/
+RUN uv add /opt/vibe-trading/
+COPY ./config/vibe-trading-tools.json /workspace/.opencode/
+
+ENV LANGCHAIN_PROVIDER=dashscope \
+    LANGCHAIN_MODEL_NAME=qwen3.7-max \
+    DASHSCOPE_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1 \
+    LANGCHAIN_TEMPERATURE=0.3 \
+    TZ=Asia/Shanghai \
+    VT_MEMORY=full \
+    VT_MEMORY_MCP_TOOLS=1 \
+    VT_MEMORY_BASE_DIR=/workspace/.vt-memory
+
+COPY --from=registry.cn-hangzhou.aliyuncs.com/jiefengnewsv2/opencode-serve:v2.0.0-mymain /opt/nano-search-mcp /opt/nano-search-mcp
+RUN uv add /opt/nano-search-mcp
+
+COPY AGENTS.md /workspace/
+COPY ./skills /workspace/.opencode/skills
+COPY ./workspace/cron_jobs /workspace/cron_jobs
+COPY ./workspace/scripts /workspace/scripts
+
+EXPOSE 4096
+
+ENTRYPOINT ["opencode", "serve", "--port", "4096", "--hostname", "0.0.0.0"]
