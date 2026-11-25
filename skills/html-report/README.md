@@ -9,8 +9,8 @@
 - **主题切换**: 右上角按钮切换浅色/深色/跟随系统
 - **当前状态头**: 回测报告顶部显示当前信号、建议仓位、判断依据
 - **多策略 Tab**: Vibe-Trading 回测支持多策略对比展示
-- **远程部署**: SCP 部署到 nginx 静态服务器
-- **DingTalk 推送**: ActionCard 消息带"查看完整报告"按钮
+- **RM 直传交付**: STS 临时凭据直传私有 OSS，用户在 RM 报告列表查看/分享（`docs/report-delivery.md`）
+- **自包含单文件**: ECharts 内联（vendored Apache-2.0 构建）+ 系统 CJK 字体，不透明源 CSP 下可渲染
 
 ## 适用范围
 
@@ -25,13 +25,13 @@
 - Jinja2 >= 3.0
 - pandas >= 1.5
 - markupsafe >= 2.0
-- ECharts 5 (CDN, 需要网络访问)
-- 可选: nginx (远程部署), SSH (SCP 部署)
+- oss2 >= 2.18 (仅交付上传需要；渲染不需要)
+- ECharts 6.1.0 已内联于 `scripts/reports/assets/echarts.min.js`（Apache-2.0），**无需网络/CDN**
 
 ## 安装
 
 ```bash
-pip install jinja2 pandas markupsafe
+pip install jinja2 pandas markupsafe oss2
 ```
 
 ## 快速开始
@@ -112,20 +112,26 @@ html = render_seven_look_html(
 )
 ```
 
-### 4. 部署到远端 nginx
+### 4. 交付给用户（RM STS 直传私有 OSS）
 
 ```bash
-# 部署到远端
-python scripts/reports/deploy_report.py report.html --stock 588000.SH
+# 沙箱内交付（读取预置的 agent token 与 RM_AGENT_API_URL）
+python scripts/reports/upload_report.py report.html
 
-# 本地部署（测试）
-python scripts/reports/deploy_report.py report.html --stock 588000.SH --local
+# 显式指定 RM 地址 / token 文件
+python scripts/reports/upload_report.py report.html --rm-url http://rm.internal:8900
 
-# 预览命令（不执行）
-python scripts/reports/deploy_report.py report.html --stock 588000.SH --dry-run
+# 只做自包含校验与流程预览（零网络调用）
+python scripts/reports/upload_report.py report.html --dry-run
 ```
 
+成功后打印 `report_id`；用户在 RM Web 报告列表查看或签发分享链。
+契约细节见 `docs/report-delivery.md`。
+
 ### 5. DingTalk 推送
+
+报告交付后由 RM 侧生成查看/分享链接；沙箱不再持有可达 URL。通知中引用
+`report_id`，或使用 RM 签发的分享链（勿编造 localhost/nginx 地址）。
 
 ```python
 from cron_jobs.notifier import send_dingtalk_actioncard
@@ -133,9 +139,9 @@ from cron_jobs.notifier import send_dingtalk_actioncard
 send_dingtalk_actioncard(
     webhook="https://oapi.dingtalk.com/robot/send?access_token=xxx",
     title="588000.SH 回测报告",
-    markdown="## 科创50ETF 回测报告\n- 总收益: +41.2%\n- Sharpe: 0.60",
+    markdown="## 科创50ETF 回测报告\n- 总收益: +41.2%\n- Sharpe: 0.60\n- report_id: rp_xxx",
     single_title="查看完整报告",
-    single_url="http://your-server.example.com/reports/588000.SH/report.html",
+    single_url="<RM 签发的分享链，例如 https://<主站>/s/{token}>",
 )
 ```
 
@@ -151,16 +157,17 @@ send_dingtalk_actioncard(
 | 信号报告 | `render_signal_html()` | 信号摘要 + 价格图 |
 | Markdown 转换 | `render_from_markdown()` | 现有 .md 报告转 HTML |
 
-## nginx 配置
+## 交付契约
 
-参见 `docs/nginx-reports.conf` 和 `docs/nginx-reports-setup.md`。
+参见 `docs/report-delivery.md`（RM STS 直传私有 OSS + 自包含 HTML 约束）。
 
 ## 安全说明
 
-- 所有路径参数经过严格正则校验，防止命令注入和路径穿越
-- Jinja2 模板启用 autoescape，防止 XSS
+- Jinja2 模板启用 autoescape，防止 XSS（内联 ECharts 以 `Markup` 显式豁免）
+- agent token 与 STS 凭据只读一次、仅存内存，任何输出/错误信息不携带凭据
+- OSS 错误只回显 status/code/request_id，不回显可能含 AccessKeyId 的原始报文
+- 上传前强制自包含校验，拒绝外部脚本/样式/字体引用
 - DingTalk API 错误会被检测并抛出异常
-- SSH/SCP 错误信息不暴露内部细节
 
 ## License
 

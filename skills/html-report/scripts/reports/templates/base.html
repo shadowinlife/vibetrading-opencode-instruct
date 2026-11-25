@@ -4,7 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>{% block title %}{{ title | default("分析报告") }}{% endblock %}</title>
-<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+{# ECharts is inlined (vendored build) so the report renders under an
+   opaque-origin CSP sandbox with no external fetches. #}
+<script>{{ echarts_js }}</script>
 <style>
 :root {
   --bg: #fafaf9; --surface: #ffffff; --text: #1c1917;
@@ -192,7 +194,12 @@ body.theme-dark {
 (function() {
   var toggle = document.getElementById('theme-toggle');
   var buttons = toggle.querySelectorAll('button');
-  var saved = localStorage.getItem('report-theme') || 'auto';
+  // Sandboxed opaque-origin frames (CSP sandbox allow-scripts) throw on
+  // localStorage access; fall back to session-only theme state there.
+  var storage = null;
+  try { storage = window.localStorage; } catch (e) { storage = null; }
+  var saved = 'auto';
+  try { if (storage) saved = storage.getItem('report-theme') || 'auto'; } catch (e) {}
 
   function applyTheme(theme) {
     document.body.classList.remove('theme-light', 'theme-dark');
@@ -201,7 +208,7 @@ body.theme-dark {
     buttons.forEach(function(b) {
       b.classList.toggle('active', b.getAttribute('data-theme') === theme);
     });
-    localStorage.setItem('report-theme', theme);
+    try { if (storage) storage.setItem('report-theme', theme); } catch (e) {}
     // Resize ECharts instances to pick up new colors
     if (typeof echarts !== 'undefined') {
       var charts = document.querySelectorAll('[_echarts_instance_]');

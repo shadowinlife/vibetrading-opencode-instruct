@@ -47,11 +47,10 @@ Every generated HTML must follow these constraints:
 - **Semantic colors**: success `#16a34a`, warning `#d97706`, danger `#dc2626`, accent `#2563eb`
 
 ### Layout
-- **Single-file HTML**: All CSS and JS inline, no external dependencies except ECharts CDN
-- **ECharts CDN**: `https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js`
+- **Single-file HTML**: All CSS and JS inline — **including ECharts** (the renderer inlines the vendored build from `scripts/reports/assets/echarts.min.js`). **No CDN or any external fetch**: reports render under `CSP: sandbox allow-scripts` on an opaque origin where external requests are blocked.
 - **Chart containers must have fixed height**: `<div style="position:relative;height:280px">` (KPI sparklines ~40px, main charts ~280px)
 - **Responsive**: Works from 375px mobile to 1440px desktop
-- **Dual theme**: Light/dark via `prefers-color-scheme` media query
+- **Dual theme**: Light/dark via `prefers-color-scheme` media query; theme scripts must tolerate `localStorage` throwing (opaque-origin sandbox)
 
 ### Anti-Slop Rules
 - Must use real data — no lorem ipsum or placeholder content
@@ -71,12 +70,13 @@ Every generated HTML must follow these constraints:
    html = render_vibe_backtest_html(ts_code="588000.SH", name="科创50ETF", ...)
    ```
 4. Save the HTML to `analysis/<stock_code>/backtests/<date>_<strategy>.html` (alongside the .md file).
-5. Deploy to local nginx:
+5. Deliver to the user through the Resource Manager (STS direct upload to private OSS — see `docs/report-delivery.md`):
    ```bash
-   python /workspace/.opencode/skills/html-report/scripts/reports/deploy_report.py <html_path> --stock <stock_code>
+   python /workspace/.opencode/skills/html-report/scripts/reports/upload_report.py <html_path>
    ```
-6. Record the deployed URL in `analysis/_index.json` under `html_url`.
-7. If DingTalk notification is configured, the notifier will include the report URL as an ActionCard button.
+   The script reads the per-box agent token and `RM_AGENT_API_URL` from the sandbox, requests a short-lived upload credential, PUTs the HTML to OSS via the internal endpoint, and confirms. It prints the `report_id` on success. Requires `oss2` (see `requirements.txt`).
+6. Record the returned `report_id` in `analysis/_index.json` under `rm_report_id`. The owner views/shares the report from the RM web report list — there is no sandbox-local URL.
+7. If DingTalk notification is configured, reference the report by `report_id`; do not fabricate a localhost/nginx URL (the sandbox is ephemeral and unreachable from the user's browser).
 
 ## Fallback: Markdown to HTML
 
@@ -91,14 +91,16 @@ html = render_from_markdown("analysis/588000/backtests/2026-06-04_dual_ma_moment
 - HTML reports live alongside Markdown reports in the same directory
 - File extension: `.html` (same base name as the `.md` file)
 - Both formats are kept — Markdown for archival, HTML for interactive viewing
-- **Local nginx URL**: `http://localhost:8088/reports/<stock_code>/<filename>.html`
-- **Nginx root**: `/workspace/reports/`
-- **Remote nginx URL** (optional): `http://your-server.example.com/reports/<stock_code>/<filename>.html`
+- **Delivery**: STS direct upload to the RM private-OSS bucket (`docs/report-delivery.md`). The sandbox keeps no served copy; the authoritative object lives at `reports/{user_id}/{report_id}.html` in OSS.
+- **Receipt**: the `report_id` returned by `upload_report.py` (record it in `analysis/_index.json`). The owner views/shares via the RM report list; the sandbox has no reachable URL.
+- **Self-contained**: the uploaded HTML must inline ECharts + CSS and use system CJK fonts — no external fetches (opaque-origin CSP). `upload_report.py` rejects non-self-contained HTML before requesting a credential.
 
 ## Rules
 
 - Always generate HTML after generating Markdown (never skip the HTML step).
 - Never use external CSS frameworks (Bootstrap, Tailwind CDN).
 - Never use CDN fonts (system font stack is sufficient).
+- Never reference any external URL in the HTML (no `<script src>`, `<link href>`, or CSS `url(http…)`); ECharts is inlined by the renderer.
 - Never generate multi-file output (everything in one `.html` file).
 - Chart containers must always have explicit height to prevent ECharts resize loops.
+- Never log or persist the agent token or STS credentials; `upload_report.py` handles them in memory only.

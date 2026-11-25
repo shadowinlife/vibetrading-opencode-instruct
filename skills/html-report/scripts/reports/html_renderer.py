@@ -6,7 +6,6 @@ with ECharts charts, CJK fonts, and dual-theme (light/dark) support.
 
 from __future__ import annotations
 
-import json
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -21,6 +20,14 @@ _env = Environment(
     loader=FileSystemLoader(str(_TEMPLATE_DIR)),
     autoescape=True,
 )
+
+# Vendored ECharts 6.1.0 (Apache-2.0), inlined into every report: the delivery
+# origin serves HTML under CSP "sandbox allow-scripts" (opaque origin), where
+# external script fetches are blocked. Markup bypasses autoescape for JS only.
+_ECHARTS_JS = (_TEMPLATE_DIR.parent / "assets" / "echarts.min.js").read_text(
+    encoding="utf-8"
+)
+_env.globals["echarts_js"] = Markup(_ECHARTS_JS)
 
 
 def _now_str() -> str:

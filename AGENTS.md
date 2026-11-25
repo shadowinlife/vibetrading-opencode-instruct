@@ -196,16 +196,15 @@ LLM 不得自行计算收益率、估值倍数、回撤、IC/IR、显著性等�
 # HTML 报告展示能力（html-report Skill）
 
 ## 概述
-已安装 `html-report` Skill（来源: github.com/shadowinlife/vibetrading-html-report），可将分析/回测结果渲染为带 ECharts 交互图表的美观 HTML 页面，通过本地 nginx 提供服务。
+已安装 `html-report` Skill（来源: github.com/shadowinlife/vibetrading-html-report），可将分析/回测结果渲染为带 ECharts 交互图表的**自包含单文件** HTML 页面，经 Resource Manager（RM）STS 直传私有 OSS 交付给用户（沙箱本地无服务、无可达 URL）。
 
 ## 基础设施
 - **Skill 位置**: `.opencode/skills/html-report/`
-- **渲染引擎**: `scripts/reports/html_renderer.py`（Jinja2 + ECharts）
-- **部署脚本**: `scripts/reports/deploy_report.py`（默认本地部署到 nginx）
-- **HTML 存放目录**: `./reports/<stock_code>/`
-- **Nginx 配置**: 部署时按需配置
-- **访问地址**: `http://<host>:8088/reports/<stock_code>/<report_name>.html`
-- **Python 依赖**: jinja2, pandas, markupsafe（已在 venv 环境中安装）
+- **渲染引擎**: `scripts/reports/html_renderer.py`（Jinja2 + 内联 ECharts，无 CDN）
+- **交付脚本**: `scripts/reports/upload_report.py`（RM 签发 STS → oss2 内网直传 OSS → 回调就绪；契约见 skill `docs/report-delivery.md`）
+- **HTML 存放目录**: `analysis/<stock_code>/`（与 .md 报告同目录；交付回执 `report_id` 记入 `analysis/_index.json`）
+- **访问方式**: 用户在 RM Web 报告列表查看/分享（独立报告域内联渲染）；沙箱侧只有 `report_id`
+- **Python 依赖**: jinja2, pandas, markupsafe, oss2（oss2 未预置时用 VPC 内网 PyPI 镜像安装）
 
 ## 可用模板（7+1）
 | 模板 | 渲染函数 | 适用场景 |
@@ -235,14 +234,14 @@ LLM 不得自行计算收益率、估值倍数、回撤、IC/IR、显著性等�
 1. **主动告知用户**当前模板的局限性，并提出扩展建议。
 2. **提出自我更新方案**：修改 Jinja2 模板文件或新增渲染函数。
 3. **征求用户确认后执行**：直接编辑 `.opencode/skills/html-report/scripts/reports/templates/` 下的模板文件，或在 `html_renderer.py` 中新增函数。
-4. **迭代后必须验证**：生成测试报告 → 部署 → HTTP 访问确认。
+4. **迭代后必须验证**：生成测试报告 → `upload_report.py --dry-run` 自包含校验 → 上传 → RM 确认就绪（`report_id` 回执）。
 
-## 部署命令速查
+## 交付命令速查
 ```bash
-# 生成并部署（默认本地 nginx）
-python .opencode/skills/html-report/scripts/reports/deploy_report.py <html_path> --stock <stock_code>
+# 生成并交付（RM STS 直传私有 OSS；读取预置 agent token 与 RM_AGENT_API_URL）
+python .opencode/skills/html-report/scripts/reports/upload_report.py <html_path>
 
-# 仅生成不部署（保存到 analysis/ 目录）
+# 仅生成不交付（保存到 analysis/ 目录）
 # 直接 write() 到 analysis/<stock_code>/backtests/<date>_<strategy>.html
 ```
 
